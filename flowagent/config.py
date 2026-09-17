@@ -90,7 +90,7 @@ class NodeConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["llm", "template", "tool", "human", "workflow"]
+    type: Literal["llm", "template", "tool", "human", "workflow", "agent"]
     description: str = ""
     # llm 节点
     system: str | None = None
@@ -110,6 +110,8 @@ class NodeConfig(BaseModel):
     options: list[str] = []  # 可选答复：声明即强校验，无效答复会重新询问（失败关闭）
     # workflow 子图节点
     workflow_file: str | None = None
+    # 受管 Agent 节点的工具循环上限；独立工作流的旧节点不会使用该字段。
+    max_tool_iterations: int = 8
     # 可靠性：重试与超时（human 节点不适用）
     retries: int = 0
     retry_delay: float = 1.0
@@ -209,8 +211,10 @@ class WorkflowSpec(BaseModel):
                 raise ValueError(f"human 节点 {name} 缺少 message")
             if node.type == "workflow" and not node.workflow_file:
                 raise ValueError(f"workflow 节点 {name} 缺少 workflow_file")
-            if node.type in ("llm", "template", "tool") and not node.output_key:
+            if node.type in ("llm", "template", "tool", "agent") and not node.output_key:
                 raise ValueError(f"节点 {name} 缺少 output_key")
+            if node.type == "agent" and not (1 <= node.max_tool_iterations <= 8):
+                raise ValueError(f"agent 节点 {name} 的 max_tool_iterations 必须在 1..8")
             if node.parser == "classifier" and not node.labels:
                 raise ValueError(f"节点 {name} 使用 classifier 解析器但未配置 labels")
             if node.output_schema and node.parser != "json":
