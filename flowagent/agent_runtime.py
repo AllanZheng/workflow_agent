@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 
 class ToolIterationLimit(RuntimeError):
@@ -15,7 +15,8 @@ class ManagedAgentRuntime:
         self.mcp_client = mcp_client
 
     async def run(self, message: str, system_prompt: str,
-                  max_tool_iterations: int) -> str:
+                  max_tool_iterations: int,
+                  history: list[dict] | None = None) -> str:
         remote_tools = await self.mcp_client.list_tools()
         allowed = {tool["name"] for tool in remote_tools}
         schemas = [{
@@ -30,6 +31,13 @@ class ManagedAgentRuntime:
         messages = []
         if system_prompt:
             messages.append(SystemMessage(content=system_prompt))
+        for item in history or []:
+            role = item.get("role")
+            content = str(item.get("content", ""))
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
         messages.append(HumanMessage(content=message))
 
         for iteration in range(max_tool_iterations + 1):

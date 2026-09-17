@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from flowagent.agent_runtime import ManagedAgentRuntime, ToolIterationLimit
 from flowagent.engine import build_graph
@@ -45,6 +45,33 @@ def test_agent_stops_at_configured_tool_iteration_limit():
         asyncio.run(ManagedAgentRuntime(FakeLlm(calls), FakeMcp()).run("hello", "", 2))
 
 
+def test_agent_places_history_before_current_message():
+    captured = {}
+
+    class CapturingModel:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return AIMessage(content="answer")
+
+    class CapturingLlm:
+        def bind_tools(self, tools): return CapturingModel()
+
+    result = asyncio.run(ManagedAgentRuntime(CapturingLlm(), FakeMcp()).run(
+        "current", "rules", 2,
+        history=[
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ],
+    ))
+
+    assert result == "answer"
+    assert [message.type for message in captured["messages"]] == [
+        "system", "human", "ai", "human",
+    ]
+    assert isinstance(captured["messages"][-1], HumanMessage)
+    assert captured["messages"][-1].content == "current"
+
+
 def test_managed_graph_executes_agent_node_with_request_runtime():
     spec = load_managed_spec("""
 workflow:
@@ -60,8 +87,8 @@ nodes:
 
     class FakeRuntime:
         def __init__(self): self.calls = []
-        async def run(self, message, system_prompt, max_tool_iterations):
-            self.calls.append((message, system_prompt, max_tool_iterations))
+        async def run(self, message, system_prompt, max_tool_iterations, history=None):
+            self.calls.append((message, system_prompt, max_tool_iterations, history))
             return "managed-answer"
 
     runtime = FakeRuntime()
@@ -72,4 +99,4 @@ nodes:
     }))
 
     assert final["vars"]["reply"] == "managed-answer"
-    assert runtime.calls == [("hello", "rules", 3)]
+    assert runtime.calls == [("hello", "rules", 3, [])]

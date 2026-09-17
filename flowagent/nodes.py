@@ -285,6 +285,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                             str(values.get("message", "")),
                             str(values.get("system_prompt", "")),
                             node.max_tool_iterations,
+                            history=list(values.get("history") or []),
                         )
                         answer = await asyncio.wait_for(call, node.timeout) if node.timeout else await call
                         break
