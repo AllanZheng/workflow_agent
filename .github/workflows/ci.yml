@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Lint (ruff)
+        run: |
+          pip install ruff
+          ruff check flowagent/ tests/ examples/ scripts/ --select E,F,W,B,UP --ignore E501
+      - name: Run tests with coverage
+        env:
+          PYTHONIOENCODING: utf-8
+        run: pytest --cov=flowagent --cov-report=term-missing
+
+  build-and-install:
+    # 构建安装验证（评审 4.8）：wheel 元数据、入口命令与运行时版本必须一致
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Install wheel and verify
+        run: |
+          pip install dist/*.whl
+          python -c "import flowagent, importlib.metadata as m; assert m.version('flowagent') == flowagent.__version__"
+          flowagent check configs/customer_service.yaml --strict

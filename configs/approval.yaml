@@ -1,0 +1,55 @@
+# =====================================================================
+# 示例：需要人工审批的工单流程（human 节点演示）
+# 演示能力：LangGraph interrupt 人工介入 → CLI 暂停（退出码3）
+#          → resume 恢复 → 按人工决定条件路由
+# 运行：  python -m flowagent run configs/approval.yaml --thread-id t1 --input "{\"ticket\": \"大额退款\"}"
+# 恢复：  python -m flowagent resume configs/approval.yaml --thread-id t1 --value 批准
+# 提示：跨进程恢复请设置 FLOWAGENT_CHECKPOINT=sqlite
+#      （及 FLOWAGENT_CHECKPOINT_PATH=<数据库文件>），使暂停状态落盘。
+# =====================================================================
+
+workflow:
+  name: approval
+  description: 人工审批工作流（human 节点 → 条件路由 → 结果）
+  start: prepare
+  recursion_limit: 30
+  inputs: [ticket, amount]
+
+nodes:
+  prepare:
+    type: template
+    description: 生成审批材料摘要
+    template: "审批单：{ticket}（金额 {amount} 元）"
+    output_key: summary
+    next: ask
+
+  ask:
+    type: human
+    description: 暂停等待人工审批，批准 / 拒绝（options 随载荷提示给恢复方）
+    message: |
+      请审批以下工单，回复「批准」或「拒绝」：
+      {summary}
+    options: [批准, 拒绝]
+    output_key: decision
+    next:
+      field: decision
+      rules:
+        - when: {op: eq, value: 批准}
+          goto: approve
+        - when: {op: eq, value: 拒绝}
+          goto: reject
+      default: reject   # 未知值一律驳回（失败关闭；contains 会误匹配“不批准”）
+
+  approve:
+    type: template
+    description: 审批通过后续处理
+    template: "✓ 已批准（{summary}），进入执行队列。"
+    output_key: final
+    next: END
+
+  reject:
+    type: template
+    description: 审批驳回通知
+    template: "✗ 已驳回（{summary}），请补充材料后重新提交。"
+    output_key: final
+    next: END

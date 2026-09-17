@@ -1,0 +1,19 @@
+# 子图示例：退款风险评级（被 configs/refund_approval.yaml 作为 workflow 节点引用）
+workflow:
+  name: risk_assessment
+  description: 退款风险评级子图（LLM 分类）
+  start: assess
+  recursion_limit: 20
+  inputs: [summary]
+
+nodes:
+  assess:
+    type: llm
+    description: 依据申请摘要输出风险等级，只输出 高风险 或 低风险
+    system: 你是风控评估器，只输出：高风险 或 低风险。
+    prompt: 请评估以下退款申请的风险等级，只输出 高风险/低风险 之一：{summary}
+    parser: classifier
+    labels: [高风险, 低风险]
+    output_key: risk_level
+    mock_response: 低风险
+    next: END

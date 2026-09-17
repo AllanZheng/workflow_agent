@@ -1,0 +1,110 @@
+# =====================================================================
+# 示例：退款审批综合流水线（showcase：子图 + 人工介入 + 重试 + 质检循环）
+# 流程：登记申请 → [子图]风险评级 ─┬─ 低风险 ──────────────────┐
+#                                  └─ 高风险 → 人工审批 ─┬─ 批准 ┤
+#                                                        └─ 拒绝 → 驳回
+#                        处理退款(带重试) → 质检循环(最多1次修订) → 通知
+# 运行：python -m flowagent run configs/refund_approval.yaml --thread-id r1 \
+#         --input '{"ticket": "T-100", "amount": 8800}'
+# mock 模式下风险评级固定“低风险”，将 mock_response 改为“高风险”可体验人工审批。
+# =====================================================================
+
+workflow:
+  name: refund_approval
+  description: 退款审批综合流水线（子图评级 → 条件路由 → 人工审批 → 重试处理 → 质检循环）
+  start: intake
+  recursion_limit: 60
+  inputs: [ticket, amount]
+
+nodes:
+  intake:
+    type: template
+    description: 登记并生成申请摘要
+    template: "退款申请 {ticket}：金额 {amount} 元，请核实后处理。"
+    output_key: summary
+    next: risk_check
+
+  risk_check:
+    type: workflow
+    description: 子图：LLM 风险评级（低风险直接处理，高风险转人工）
+    workflow_file: subflows/risk.yaml
+    output_key: risk
+    next:
+      field: risk.risk_level
+      rules:
+        - when: {op: eq, value: 高风险}
+          goto: approval
+      default: process
+
+  approval:
+    type: human
+    description: 大额/高风险退款需人工审批（options 提示可选项）
+    message: "请审批该退款申请（批准 / 拒绝）：{summary}"
+    options: [批准, 拒绝]
+    output_key: decision
+    next:
+      field: decision
+      rules:
+        - when: {op: eq, value: 批准}
+          goto: process
+      default: rejected   # eq 精确匹配：否定/未知答复一律驳回（失败关闭）
+
+  process:
+    type: llm
+    description: 生成退款回执（演示节点重试与超时配置）
+    system: 你是退款系统操作员，直接输出办理回执。
+    prompt: 请为以下申请生成退款办理回执：{summary}
+    output_key: receipt
+    retries: 2
+    retry_delay: 1.0
+    backoff: 2.0
+    timeout: 30
+    mock_response: "已为该申请办理退款，款项将在3-5个工作日内原路退回。"
+    next: qa
+
+  qa:
+    type: llm
+    description: 质检回执（JSON 打分），低于 7 分回炉修订（最多 1 次）
+    system: '你是质检员，只输出JSON对象：{"score": 1到10的整数, "reason": "一句话理由"}'
+    prompt: 请为以下退款回执质检打分，只输出JSON对象：{receipt}
+    parser: json
+    output_key: qa
+    output_schema:            # LLM 输出强校验（失败关闭）：缺 score/越界都不放行
+      score: {type: integer, min: 1, max: 10}
+      reason: {type: string}
+    mock_response: '{"score": 9, "reason": "回执规范"}'
+    next:
+      field: qa.score
+      rules:
+        - when: {op: lt, value: 7}
+          goto: fix
+          max_loops: 1
+          loop_exhaust: notify
+      default: notify
+
+  fix:
+    type: template
+    description: 按质检意见修订回执
+    template: "【修订】{receipt}（补充说明：{qa.reason}）"
+    output_key: receipt
+    next: qa
+
+  notify:
+    type: template
+    description: 生成客户通知（终态）
+    template: |
+      ========== 退款处理完成 ==========
+      申请摘要：{summary}
+      风险等级：{risk.risk_level}
+      办理回执：{receipt}
+      质检结论：{qa.reason}（{qa.score}/10）
+      =================================
+    output_key: final_notice
+    next: END
+
+  rejected:
+    type: template
+    description: 审批驳回（终态）
+    template: "已驳回退款申请。{summary}（如需申诉请联系人工客服）"
+    output_key: final_notice
+    next: END

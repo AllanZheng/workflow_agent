@@ -1,0 +1,8 @@
+# sdist 资产收录（评审 4.8）：README 引用的示例配置、文档与示例必须随源码分发
+include README.md
+include CHANGELOG.md
+include LICENSE
+include requirements.txt
+recursive-include configs *.yaml
+recursive-include docs *.md
+recursive-include examples *.py
