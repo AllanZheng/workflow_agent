@@ -43,7 +43,7 @@ async def _sdk_session(
 
     async with httpx2.AsyncClient(headers=dict(headers), timeout=timeout_seconds) as http_client:
         async with streamable_http_client(endpoint, http_client=http_client) as streams:
-            read_stream, write_stream, _ = streams
+            read_stream, write_stream = streams
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 yield session
