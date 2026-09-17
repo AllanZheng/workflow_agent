@@ -160,4 +160,18 @@ def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> Fa
         except ConfigError as exc:
             return JSONResponse(status_code=422, content={"error": {"code": "managed_config_invalid", "message": str(exc)}})
 
+    @app.post("/execution-v1/reset")
+    async def reset(request: Request):
+        authorization = request.headers.get("authorization", "")
+        expected = f"Bearer {internal_token}"
+        if not hmac.compare_digest(authorization, expected):
+            return JSONResponse(status_code=401, content={"error": {"code": "unauthorized"}})
+        body = await request.json()
+        continuity_key = body.get("continuity_key")
+        generation = body.get("generation")
+        if not isinstance(continuity_key, str) or not continuity_key or not isinstance(generation, int):
+            return JSONResponse(status_code=422, content={"error": {"code": "invalid_reset"}})
+        # 受管 Workflow 首期显式关闭 checkpoint，无服务端会话状态需要清理。
+        return {"ok": True, "continuity_key": continuity_key, "generation": generation}
+
     return app

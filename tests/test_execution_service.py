@@ -36,6 +36,16 @@ def test_execution_service_requires_internal_bearer():
     assert client.post("/execution-v1/respond", json=_envelope()).status_code == 401
 
 
+def test_execution_service_accepts_authenticated_reset_without_checkpoint_state():
+    response = TestClient(build_execution_app("secret-token")).post(
+        "/execution-v1/reset",
+        json={"continuity_key": "c1", "generation": 2},
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "continuity_key": "c1", "generation": 2}
+
+
 def test_execution_service_executes_managed_yaml_and_returns_receipt():
     client = TestClient(build_execution_app("secret-token"))
     response = client.post(
