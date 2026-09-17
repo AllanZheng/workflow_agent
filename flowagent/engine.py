@@ -145,6 +145,9 @@ def build_graph(spec: WorkflowSpec, llm=None, checkpointer=None, hooks=None):
             )
 
     graph.add_edge(START, spec.workflow.start)
+    # 受管 execution 服务传入 False，显式禁用跨请求 checkpoint。
+    if checkpointer is False:
+        return graph.compile()
     return graph.compile(checkpointer=checkpointer)
 
 
