@@ -9,7 +9,8 @@ from flowagent.execution_service import build_execution_app
 
 def main() -> None:
     token = os.environ.get("FRAMEWORK_INTERNAL_TOKEN", "")
-    app = build_execution_app(token)
+    mcp_token = os.environ.get("AGENT_PLATFORM_MCP_WORKFLOW_TOKEN", "")
+    app = build_execution_app(token, mcp_token)
     uvicorn.run(
         app,
         host=os.environ.get("WORKFLOW_HOST", "0.0.0.0"),

@@ -101,7 +101,7 @@ def _fixed_or_error(node_name: str, normal_targets, error_goto: str):
     return router
 
 
-def build_graph(spec: WorkflowSpec, llm=None, checkpointer=None, hooks=None):
+def build_graph(spec: WorkflowSpec, llm=None, checkpointer=None, hooks=None, agent_runtime=None):
     """将 WorkflowSpec 编译为可执行的 LangGraph CompiledStateGraph。"""
     if llm is None:
         llm = create_llm()
@@ -110,7 +110,10 @@ def build_graph(spec: WorkflowSpec, llm=None, checkpointer=None, hooks=None):
 
     graph = StateGraph(WFState)
     for name, node in spec.nodes.items():
-        graph.add_node(name, make_node_executor(name, node, llm, checkpointer, hooks))
+        graph.add_node(
+            name,
+            make_node_executor(name, node, llm, checkpointer, hooks, agent_runtime),
+        )
 
     for name, node in spec.nodes.items():
         nxt = node.next

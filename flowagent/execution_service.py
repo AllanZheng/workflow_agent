@@ -16,6 +16,8 @@ from .engine import build_graph
 from .errors import ConfigError
 from .llm import MockLLM
 from .managed_config import load_managed_spec
+from .agent_runtime import ManagedAgentRuntime
+from .mcp_edge_client import McpEdgeClient
 
 
 class StrictModel(BaseModel):
@@ -78,7 +80,16 @@ def _request_llm(spec, config: ManagedAgentConfig):
     )
 
 
-async def execute_managed(request: ExecutionRequest) -> dict[str, Any]:
+def _managed_system_prompt(snapshot: dict[str, Any]) -> str:
+    sections = [str(snapshot.get("system_prompt") or "").strip()]
+    for skill in snapshot.get("skills") or []:
+        content = skill.get("content") if isinstance(skill, dict) else None
+        if content:
+            sections.append(str(content).strip())
+    return "\n\n".join(section for section in sections if section)
+
+
+async def execute_managed(request: ExecutionRequest, mcp_workload_token: str = "") -> dict[str, Any]:
     config = request.agent_config
     if _digest(config.snapshot) != config.config_digest:
         raise ValueError("config_digest_mismatch")
@@ -90,12 +101,23 @@ async def execute_managed(request: ExecutionRequest) -> dict[str, Any]:
     if not isinstance(yaml_text, str) or not yaml_text:
         raise ConfigError("managed_yaml_missing")
     spec = load_managed_spec(yaml_text)
+    llm = _request_llm(spec, config)
+    agent_runtime = None
+    if any(node.type == "agent" for node in spec.nodes.values()):
+        if not config.mcp_endpoint:
+            raise ConfigError("managed_mcp_endpoint_missing")
+        if not mcp_workload_token:
+            raise ConfigError("managed_mcp_workload_token_missing")
+        mcp_client = McpEdgeClient(str(config.mcp_endpoint), mcp_workload_token)
+        agent_runtime = ManagedAgentRuntime(llm, mcp_client)
     # 每次请求创建独立模型客户端，不进入缓存；需要模型时禁止 auto->Mock 回退。
-    graph = build_graph(spec, llm=_request_llm(spec, config), checkpointer=False)
+    graph = build_graph(
+        spec, llm=llm, checkpointer=False, agent_runtime=agent_runtime,
+    )
     final = await graph.ainvoke({
         "vars": {
             "message": request.message, "history": request.history,
-            "system_prompt": config.snapshot.get("system_prompt", ""),
+            "system_prompt": _managed_system_prompt(config.snapshot),
             "skills": config.snapshot.get("skills", []),
         },
         "trace": [], "loop_counts": {}, "error": None,
@@ -113,7 +135,7 @@ async def execute_managed(request: ExecutionRequest) -> dict[str, Any]:
     }
 
 
-def build_execution_app(internal_token: str) -> FastAPI:
+def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> FastAPI:
     if not internal_token:
         raise ValueError("FRAMEWORK_INTERNAL_TOKEN is required")
     app = FastAPI(title="FlowAgent execution-v1")
@@ -130,7 +152,7 @@ def build_execution_app(internal_token: str) -> FastAPI:
             return JSONResponse(status_code=401, content={"error": {"code": "unauthorized"}})
         try:
             payload = ExecutionRequest.model_validate(await request.json())
-            return await execute_managed(payload)
+            return await execute_managed(payload, mcp_workload_token)
         except ValueError as exc:
             code = str(exc)
             status = 409 if code in {"config_digest_mismatch", "config_identity_mismatch"} else 422

@@ -9,6 +9,7 @@ human 节点必须**绕过**线程池与重试：LangGraph 的 interrupt() 依�
 异常，必须原样向上抛给 LangGraph 运行时，绝不能被重试/on_error 吞掉。
 """
 
+import asyncio
 import concurrent.futures
 import json
 import sys
@@ -262,8 +263,60 @@ def _run_with_reliability(
                 time.sleep(node.retry_delay * (node.backoff ** (attempt - 1)))
 
 
-def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hooks: "NodeHooks | None" = None):
+def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hooks: "NodeHooks | None" = None,
+                       agent_runtime=None):
     """构造 LangGraph 节点函数：执行业务逻辑 + 事件钩子 + 轨迹/计数 + 错误降级。"""
+
+    if node.type == "agent":
+        async def agent_executor(state: WFState) -> dict:
+            if agent_runtime is None:
+                raise FlowAgentError("受管 Agent Runtime 未初始化")
+            if hooks is not None:
+                hooks.emit_start(name, dict(state))
+            counts = dict(state.get("loop_counts") or {})
+            counts[name] = counts.get(name, 0) + 1
+            started = time.monotonic()
+            values = dict(state.get("vars") or {})
+            attempts = node.retries + 1
+            try:
+                for attempt in range(1, attempts + 1):
+                    try:
+                        call = agent_runtime.run(
+                            str(values.get("message", "")),
+                            str(values.get("system_prompt", "")),
+                            node.max_tool_iterations,
+                        )
+                        answer = await asyncio.wait_for(call, node.timeout) if node.timeout else await call
+                        break
+                    except (TimeoutError, asyncio.TimeoutError):
+                        raise
+                    except Exception:
+                        if attempt >= attempts:
+                            raise
+                        if node.retry_delay > 0:
+                            await asyncio.sleep(node.retry_delay * (node.backoff ** (attempt - 1)))
+                result = {node.output_key: answer}
+            except Exception as exc:
+                if hooks is not None:
+                    hooks.emit_end(name, None, exc)
+                if node.on_error is None:
+                    raise
+                error = {"node": name, "type": type(exc).__name__, "message": str(exc)}
+                return {
+                    "vars": dict(node.on_error.set or {}), "loop_counts": counts,
+                    "trace": [{"node": name, "status": "error", "error": error,
+                               "duration_ms": int((time.monotonic() - started) * 1000)}],
+                    "error": error,
+                }
+            if hooks is not None:
+                hooks.emit_end(name, result, None)
+            return {
+                "vars": result, "loop_counts": counts,
+                "trace": [{"node": name, "status": "ok", "outputs": _summarize(result),
+                           "duration_ms": int((time.monotonic() - started) * 1000)}],
+            }
+
+        return agent_executor
 
     def executor(state: WFState) -> dict:
         if hooks is not None:
