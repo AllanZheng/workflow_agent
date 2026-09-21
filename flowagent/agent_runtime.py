@@ -14,9 +14,7 @@ class ManagedAgentRuntime:
         self.llm = llm
         self.mcp_client = mcp_client
 
-    async def run(self, message: str, system_prompt: str,
-                  max_tool_iterations: int,
-                  history: list[dict] | None = None) -> str:
+    async def _setup(self, message: str, system_prompt: str, history: list[dict] | None):
         remote_tools = await self.mcp_client.list_tools()
         allowed = {tool["name"] for tool in remote_tools}
         schemas = [{
@@ -27,7 +25,6 @@ class ManagedAgentRuntime:
                 "parameters": tool.get("input_schema") or {"type": "object"},
             },
         } for tool in remote_tools]
-        model = self.llm.bind_tools(schemas)
         messages = []
         if system_prompt:
             messages.append(SystemMessage(content=system_prompt))
@@ -39,12 +36,60 @@ class ManagedAgentRuntime:
             elif role == "assistant":
                 messages.append(AIMessage(content=content))
         messages.append(HumanMessage(content=message))
+        return allowed, schemas, messages
+
+    async def run(self, message: str, system_prompt: str,
+                  max_tool_iterations: int,
+                  history: list[dict] | None = None) -> str:
+        allowed, schemas, messages = await self._setup(message, system_prompt, history)
+        model = self.llm.bind_tools(schemas)
 
         for iteration in range(max_tool_iterations + 1):
             response = await model.ainvoke(messages)
             tool_calls = list(getattr(response, "tool_calls", None) or [])
             if not tool_calls:
                 return str(response.content)
+            if iteration >= max_tool_iterations:
+                raise ToolIterationLimit("managed agent tool iteration limit exceeded")
+            messages.append(response)
+            for call in tool_calls:
+                name = call["name"]
+                if name not in allowed:
+                    raise ValueError(f"tool_not_allowed: {name}")
+                result = await self.mcp_client.call_tool(name, call.get("args") or {})
+                messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
+        raise ToolIterationLimit("managed agent tool iteration limit exceeded")
+
+    async def stream(self, message: str, system_prompt: str,
+                     max_tool_iterations: int,
+                     history: list[dict] | None = None):
+        """流式执行 Agent，且只产出最终无工具调用轮次的文本内容。
+
+        工具调用仍在本地循环完成；工具名、参数和结果均不写入调用方的文本流。
+        """
+        allowed, schemas, messages = await self._setup(message, system_prompt, history)
+        model = self.llm.bind_tools(schemas)
+
+        for iteration in range(max_tool_iterations + 1):
+            response = None
+            text_chunks: list[str] = []
+            async for chunk in model.astream(messages):
+                response = chunk if response is None else response + chunk
+                content = getattr(chunk, "content", "")
+                # 空工具路径下可立即透传，获得真正 token 级流式。若本轮工具
+                # 可用则先暂存，直到确认它不是工具调用轮次，避免泄露中间推理。
+                if isinstance(content, str) and content:
+                    if schemas:
+                        text_chunks.append(content)
+                    else:
+                        yield content
+            if response is None:
+                response = AIMessage(content="")
+            tool_calls = list(getattr(response, "tool_calls", None) or [])
+            if not tool_calls:
+                for content in text_chunks:
+                    yield content
+                return
             if iteration >= max_tool_iterations:
                 raise ToolIterationLimit("managed agent tool iteration limit exceeded")
             messages.append(response)

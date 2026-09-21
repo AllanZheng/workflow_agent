@@ -25,6 +25,7 @@ try:  # GraphBubbleUp 是 GraphInterrupt 等控制流异常的基类
 except ImportError:  # pragma: no cover - 兼容旧版本
     from langgraph.errors import GraphInterrupt as GraphBubbleUp
 from langgraph.types import interrupt
+from langgraph.config import get_stream_writer
 
 from .config import NodeConfig
 from .errors import FlowAgentError
@@ -264,8 +265,10 @@ def _run_with_reliability(
 
 
 def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hooks: "NodeHooks | None" = None,
-                       agent_runtime=None):
+                       agent_runtime=None, stream_final_reply: bool = False):
     """构造 LangGraph 节点函数：执行业务逻辑 + 事件钩子 + 轨迹/计数 + 错误降级。"""
+
+    is_final_reply = stream_final_reply and node.output_key == "reply" and node.next == "END"
 
     if node.type == "agent":
         async def agent_executor(state: WFState) -> dict:
@@ -281,13 +284,27 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
             try:
                 for attempt in range(1, attempts + 1):
                     try:
-                        call = agent_runtime.run(
-                            str(values.get("message", "")),
-                            str(values.get("system_prompt", "")),
-                            node.max_tool_iterations,
-                            history=list(values.get("history") or []),
-                        )
-                        answer = await asyncio.wait_for(call, node.timeout) if node.timeout else await call
+                        if is_final_reply:
+                            writer = get_stream_writer()
+                            chunks: list[str] = []
+                            async for delta in agent_runtime.stream(
+                                str(values.get("message", "")),
+                                str(values.get("system_prompt", "")),
+                                node.max_tool_iterations,
+                                history=list(values.get("history") or []),
+                            ):
+                                if delta:
+                                    chunks.append(delta)
+                                    writer({"kind": "delta", "content": delta})
+                            answer = "".join(chunks)
+                        else:
+                            call = agent_runtime.run(
+                                str(values.get("message", "")),
+                                str(values.get("system_prompt", "")),
+                                node.max_tool_iterations,
+                                history=list(values.get("history") or []),
+                            )
+                            answer = await asyncio.wait_for(call, node.timeout) if node.timeout else await call
                         break
                     except (TimeoutError, asyncio.TimeoutError):
                         raise
@@ -318,6 +335,55 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
             }
 
         return agent_executor
+
+    if node.type == "llm" and is_final_reply:
+        async def streamed_llm_executor(state: WFState) -> dict:
+            if llm is None:
+                raise FlowAgentError("LLM 未初始化")
+            if hooks is not None:
+                hooks.emit_start(name, dict(state))
+            counts = dict(state.get("loop_counts") or {})
+            counts[name] = counts.get(name, 0) + 1
+            started = time.monotonic()
+            try:
+                ctx = dict(state.get("vars") or {})
+                messages = []
+                if node.system:
+                    messages.append(SystemMessage(render_template(node.system, ctx)))
+                messages.append(HumanMessage(render_template(node.prompt, ctx)))
+                writer = get_stream_writer()
+                chunks: list[str] = []
+                async for response in llm.astream(messages):
+                    content = getattr(response, "content", "")
+                    if isinstance(content, str) and content:
+                        chunks.append(content)
+                        writer({"kind": "delta", "content": content})
+                content = "".join(chunks)
+                parsed = parse_output(content, node.parser, node.labels)
+                if node.output_schema:
+                    validate_schema(parsed, node.output_schema)
+                result = {node.output_key: parsed}
+            except Exception as exc:
+                if hooks is not None:
+                    hooks.emit_end(name, None, exc)
+                if node.on_error is None:
+                    raise
+                error = {"node": name, "type": type(exc).__name__, "message": str(exc)}
+                return {
+                    "vars": dict(node.on_error.set or {}), "loop_counts": counts,
+                    "trace": [{"node": name, "status": "error", "error": error,
+                               "duration_ms": int((time.monotonic() - started) * 1000)}],
+                    "error": error,
+                }
+            if hooks is not None:
+                hooks.emit_end(name, result, None)
+            return {
+                "vars": result, "loop_counts": counts,
+                "trace": [{"node": name, "status": "ok", "outputs": _summarize(result),
+                           "duration_ms": int((time.monotonic() - started) * 1000)}],
+            }
+
+        return streamed_llm_executor
 
     def executor(state: WFState) -> dict:
         if hooks is not None:
