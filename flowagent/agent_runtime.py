@@ -10,12 +10,14 @@ class ToolIterationLimit(RuntimeError):
 
 
 class ManagedAgentRuntime:
-    def __init__(self, llm, mcp_client) -> None:
+    def __init__(self, llm, mcp_client=None) -> None:
         self.llm = llm
         self.mcp_client = mcp_client
 
     async def _setup(self, message: str, system_prompt: str, history: list[dict] | None):
-        remote_tools = await self.mcp_client.list_tools()
+        # 受管 Agent 可显式禁用工具：纯文本工作流不应为了取得一个空列表
+        # 而依赖 MCP 服务。调用方负责拒绝半配置的 MCP（endpoint/token 仅其一）。
+        remote_tools = await self.mcp_client.list_tools() if self.mcp_client is not None else []
         allowed = {tool["name"] for tool in remote_tools}
         schemas = [{
             "type": "function",

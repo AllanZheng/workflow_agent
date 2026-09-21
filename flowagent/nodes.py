@@ -281,6 +281,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
             started = time.monotonic()
             values = dict(state.get("vars") or {})
             attempts = node.retries + 1
+            emitted_delta = False
             try:
                 for attempt in range(1, attempts + 1):
                     try:
@@ -295,6 +296,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                             ):
                                 if delta:
                                     chunks.append(delta)
+                                    emitted_delta = True
                                     writer({"kind": "delta", "content": delta})
                             answer = "".join(chunks)
                         else:
@@ -309,12 +311,18 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                     except (TimeoutError, asyncio.TimeoutError):
                         raise
                     except Exception:
+                        # 一旦用户看见文本，重试会让先前已废弃的部分回复留在
+                        # SSE 流中，而 done 却对应另一轮结果；必须以 error 收尾。
+                        if is_final_reply and emitted_delta:
+                            raise
                         if attempt >= attempts:
                             raise
                         if node.retry_delay > 0:
                             await asyncio.sleep(node.retry_delay * (node.backoff ** (attempt - 1)))
                 result = {node.output_key: answer}
             except Exception as exc:
+                if is_final_reply and emitted_delta:
+                    raise
                 if hooks is not None:
                     hooks.emit_end(name, None, exc)
                 if node.on_error is None:

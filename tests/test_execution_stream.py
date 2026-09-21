@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, AIMessageChunk
 
@@ -170,3 +171,131 @@ def test_execution_stream_endpoint_auth_and_exception_have_sse_terminal(monkeypa
     assert [event["kind"] for event in events] == ["meta", "error"]
     assert [event["seq"] for event in events] == [0, 1]
     assert events[-1]["error_code"] == "execution_failed"
+
+
+def test_execution_stream_runs_pure_text_agent_without_mcp(monkeypatch):
+    """没有 MCP 配置时，纯文本 Agent 绑定空工具列表而不是请求 MCP。"""
+    payload = _envelope(_AGENT_YAML)
+    payload["agent_config"].pop("mcp_endpoint")
+    captured = {}
+
+    class FakeBoundModel:
+        async def astream(self, messages):
+            yield AIMessageChunk(content="plain reply")
+
+    class FakeLlm:
+        def bind_tools(self, tools):
+            captured["tools"] = tools
+            return FakeBoundModel()
+
+    def unexpected_mcp(*args, **kwargs):
+        raise AssertionError("pure text execution must not construct an MCP client")
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
+    monkeypatch.setattr(execution_service, "McpEdgeClient", unexpected_mcp)
+
+    async def collect():
+        request = execution_service.ExecutionRequest.model_validate(payload)
+        return [event async for event in execution_service.stream_managed(request)]
+
+    events = asyncio.run(collect())
+    assert captured["tools"] == []
+    assert [event["kind"] for event in events] == ["meta", "delta", "done"]
+    assert events[-1]["content"] == "plain reply"
+
+
+def test_execution_stream_refuses_partial_mcp_configuration(monkeypatch):
+    """声明 MCP endpoint 的配置必须同时提供服务 workload token。"""
+    payload = _envelope(_AGENT_YAML)
+
+    class FakeLlm:
+        def bind_tools(self, tools): raise AssertionError("must fail before model bind")
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
+
+    async def consume():
+        stream = execution_service.stream_managed(
+            execution_service.ExecutionRequest.model_validate(payload)
+        )
+        first = await anext(stream)
+        with pytest.raises(Exception, match="mcp"):
+            await anext(stream)
+        return first
+
+    assert asyncio.run(consume())["kind"] == "meta"
+
+
+def test_execution_stream_stops_with_error_after_visible_delta(monkeypatch):
+    """首个用户可见 delta 后失败绝不能重试并把部分回复拼进 done。"""
+    payload = _envelope(_AGENT_YAML)
+    payload["agent_config"]["snapshot"]["workflow"]["yaml"] = _AGENT_YAML.replace(
+        "max_tool_iterations: 2", "max_tool_iterations: 2\n    retries: 1"
+    )
+    payload["agent_config"]["config_digest"] = _digest(payload["agent_config"]["snapshot"])
+    calls = []
+
+    class FakeMcp:
+        async def list_tools(self): return []
+
+    class FakeBoundModel:
+        async def astream(self, messages):
+            calls.append("attempt")
+            yield AIMessageChunk(content="abandoned")
+            raise RuntimeError("upstream dropped")
+
+    class FakeLlm:
+        def bind_tools(self, tools): return FakeBoundModel()
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
+    monkeypatch.setattr(execution_service, "McpEdgeClient", lambda endpoint, token: FakeMcp())
+
+    response = TestClient(build_execution_app("secret-token", "mcp-token")).post(
+        "/execution-v1/respond/stream", json=payload,
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    events = [json.loads(line[5:].strip()) for line in response.text.splitlines() if line.startswith("data:")]
+    assert calls == ["attempt"]
+    assert [event["kind"] for event in events] == ["meta", "delta", "error"]
+    assert events[-1]["error_code"] == "execution_failed"
+    assert all(event["kind"] != "done" for event in events)
+
+
+def test_execution_stream_cancellation_propagates_and_closes_model_stream(monkeypatch):
+    """取消消费者必须取消下游模型 async generator，且不能被转成 SSE error。"""
+    payload = _envelope(_AGENT_YAML)
+    first_delta = asyncio.Event()
+    closed = asyncio.Event()
+
+    class FakeMcp:
+        async def list_tools(self): return []
+
+    class FakeBoundModel:
+        async def astream(self, messages):
+            try:
+                yield AIMessageChunk(content="first")
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+    class FakeLlm:
+        def bind_tools(self, tools): return FakeBoundModel()
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
+    monkeypatch.setattr(execution_service, "McpEdgeClient", lambda endpoint, token: FakeMcp())
+
+    async def cancel_consumer():
+        async def consume():
+            async for event in execution_service.stream_managed(
+                execution_service.ExecutionRequest.model_validate(payload), "mcp-token"
+            ):
+                if event["kind"] == "delta":
+                    first_delta.set()
+
+        task = asyncio.create_task(consume())
+        await asyncio.wait_for(first_delta.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(closed.wait(), timeout=1)
+
+    asyncio.run(cancel_consumer())

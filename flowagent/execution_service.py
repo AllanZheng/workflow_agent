@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -104,11 +105,11 @@ async def execute_managed(request: ExecutionRequest, mcp_workload_token: str = "
     llm = _request_llm(spec, config)
     agent_runtime = None
     if any(node.type == "agent" for node in spec.nodes.values()):
-        if not config.mcp_endpoint:
-            raise ConfigError("managed_mcp_endpoint_missing")
-        if not mcp_workload_token:
-            raise ConfigError("managed_mcp_workload_token_missing")
-        mcp_client = McpEdgeClient(str(config.mcp_endpoint), mcp_workload_token)
+        has_endpoint = bool(config.mcp_endpoint)
+        has_token = bool(mcp_workload_token)
+        if has_endpoint != has_token:
+            raise ConfigError("managed_mcp_configuration_incomplete")
+        mcp_client = McpEdgeClient(str(config.mcp_endpoint), mcp_workload_token) if has_endpoint else None
         agent_runtime = ManagedAgentRuntime(llm, mcp_client)
     # 每次请求创建独立模型客户端，不进入缓存；需要模型时禁止 auto->Mock 回退。
     graph = build_graph(
@@ -158,13 +159,12 @@ async def stream_managed(request: ExecutionRequest, mcp_workload_token: str = ""
     llm = _request_llm(spec, config)
     agent_runtime = None
     if any(node.type == "agent" for node in spec.nodes.values()):
-        if not config.mcp_endpoint:
-            raise ConfigError("managed_mcp_endpoint_missing")
-        if not mcp_workload_token:
-            raise ConfigError("managed_mcp_workload_token_missing")
-        agent_runtime = ManagedAgentRuntime(
-            llm, McpEdgeClient(str(config.mcp_endpoint), mcp_workload_token)
-        )
+        has_endpoint = bool(config.mcp_endpoint)
+        has_token = bool(mcp_workload_token)
+        if has_endpoint != has_token:
+            raise ConfigError("managed_mcp_configuration_incomplete")
+        mcp_client = McpEdgeClient(str(config.mcp_endpoint), mcp_workload_token) if has_endpoint else None
+        agent_runtime = ManagedAgentRuntime(llm, mcp_client)
     graph = build_graph(
         spec, llm=llm, checkpointer=False, agent_runtime=agent_runtime,
         stream_final_reply=True,
@@ -238,6 +238,8 @@ def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> Fa
                 async for event in stream_managed(payload, mcp_workload_token):
                     emitted = event["seq"] + 1
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            except asyncio.CancelledError:
+                raise
             except Exception:  # 对外只给稳定错误码，不能泄露配置、工具或密钥。
                 event = {
                     "seq": emitted, "kind": "error", "trace_id": payload.execution_id,
