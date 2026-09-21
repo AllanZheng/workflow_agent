@@ -260,6 +260,46 @@ def test_execution_stream_stops_with_error_after_visible_delta(monkeypatch):
     assert all(event["kind"] != "done" for event in events)
 
 
+def test_execution_stream_llm_does_not_fallback_after_visible_delta(monkeypatch):
+    """终态 LLM 发出文本后失败时，on_error 不能用 fallback 伪造 done。"""
+    yaml_text = """workflow:
+  name: stream-llm-error
+  start: answer
+nodes:
+  answer:
+    type: llm
+    prompt: '{message}'
+    output_key: reply
+    on_error:
+      goto: fallback
+      set:
+        reply: fallback answer
+    next: END
+  fallback:
+    type: template
+    template: 'fallback answer'
+    output_key: reply
+    next: END
+"""
+    payload = _envelope(yaml_text)
+
+    class FakeLlm:
+        async def astream(self, messages):
+            yield AIMessageChunk(content="abandoned partial")
+            raise RuntimeError("upstream dropped")
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
+
+    response = TestClient(build_execution_app("secret-token")).post(
+        "/execution-v1/respond/stream", json=payload,
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    events = [json.loads(line[5:].strip()) for line in response.text.splitlines() if line.startswith("data:")]
+    assert [event["kind"] for event in events] == ["meta", "delta", "error"]
+    assert events[1]["content"] == "abandoned partial"
+    assert all(event["kind"] != "done" for event in events)
+
+
 def test_execution_stream_cancellation_propagates_and_closes_model_stream(monkeypatch):
     """取消消费者必须取消下游模型 async generator，且不能被转成 SSE error。"""
     payload = _envelope(_AGENT_YAML)

@@ -353,6 +353,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
             counts = dict(state.get("loop_counts") or {})
             counts[name] = counts.get(name, 0) + 1
             started = time.monotonic()
+            emitted_delta = False
             try:
                 ctx = dict(state.get("vars") or {})
                 messages = []
@@ -365,6 +366,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                     content = getattr(response, "content", "")
                     if isinstance(content, str) and content:
                         chunks.append(content)
+                        emitted_delta = True
                         writer({"kind": "delta", "content": content})
                 content = "".join(chunks)
                 parsed = parse_output(content, node.parser, node.labels)
@@ -372,6 +374,10 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                     validate_schema(parsed, node.output_schema)
                 result = {node.output_key: parsed}
             except Exception as exc:
+                # 对外已发出的文本无法撤回；若再走 on_error，done 会变成
+                # fallback 而与客户端已累计的 delta 不一致，必须让 SSE error 收尾。
+                if emitted_delta:
+                    raise
                 if hooks is not None:
                     hooks.emit_end(name, None, exc)
                 if node.on_error is None:
