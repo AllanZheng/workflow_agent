@@ -3,7 +3,12 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt fastapi uvicorn
+# 版本钉死为本地 venv 已验证组合（裸装最新 fastapi/uvicorn 会与 langgraph 依赖
+# 冲突，pip 回溯到远古 uvicorn 后 sdist 构建失败）；清华源加速国内构建。
+# 升级依赖时先在本地 venv 验证再同步这两处 pin。
+RUN pip install --no-cache-dir \
+    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    -r requirements.txt fastapi==0.141.1 uvicorn==0.53.0
 
 COPY . .
 

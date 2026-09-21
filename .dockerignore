@@ -2,9 +2,11 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.pytest_tmp/
 .coverage
 coverage.xml
 htmlcov/
 *.sqlite
 trace*.jsonl
 .git/
+dist/
