@@ -40,6 +40,25 @@ _MAX_TRACE_LEN = 120
 _SUB_ENGINES: dict = {}
 
 
+class _TextStreamNormalizer:
+    """让 text parser 的可见增量与最终 strip 后的值严格一致。"""
+
+    def __init__(self) -> None:
+        self.started = False
+        self.trailing = ""
+
+    def feed(self, content: str) -> str:
+        if not self.started:
+            content = content.lstrip()
+            if not content:
+                return ""
+            self.started = True
+        content = self.trailing + content
+        visible = content.rstrip()
+        self.trailing = content[len(visible):]
+        return visible
+
+
 def _summarize(result: dict) -> dict:
     """轨迹里只留简短摘要，避免大对象撑爆状态。"""
     out = {}
@@ -284,21 +303,30 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
             emitted_delta = False
             try:
                 for attempt in range(1, attempts + 1):
+                    attempt_emitted = [False]
                     try:
                         if is_final_reply:
                             writer = get_stream_writer()
-                            chunks: list[str] = []
-                            async for delta in agent_runtime.stream(
-                                str(values.get("message", "")),
-                                str(values.get("system_prompt", "")),
-                                node.max_tool_iterations,
-                                history=list(values.get("history") or []),
-                            ):
-                                if delta:
-                                    chunks.append(delta)
-                                    emitted_delta = True
-                                    writer({"kind": "delta", "content": delta})
-                            answer = "".join(chunks)
+
+                            async def stream_answer() -> str:
+                                chunks: list[str] = []
+                                async for delta in agent_runtime.stream(
+                                    str(values.get("message", "")),
+                                    str(values.get("system_prompt", "")),
+                                    node.max_tool_iterations,
+                                    history=list(values.get("history") or []),
+                                ):
+                                    if delta:
+                                        chunks.append(delta)
+                                        attempt_emitted[0] = True
+                                        writer({"kind": "delta", "content": delta})
+                                return "".join(chunks)
+
+                            # wait_for 取消正在迭代的 async generator，确保 timeout
+                            # 覆盖整个模型流而非仅首个 chunk。
+                            call = stream_answer()
+                            answer = await asyncio.wait_for(call, node.timeout) if node.timeout else await call
+                            emitted_delta = emitted_delta or attempt_emitted[0]
                         else:
                             call = agent_runtime.run(
                                 str(values.get("message", "")),
@@ -309,8 +337,10 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                             answer = await asyncio.wait_for(call, node.timeout) if node.timeout else await call
                         break
                     except (TimeoutError, asyncio.TimeoutError):
+                        emitted_delta = emitted_delta or attempt_emitted[0]
                         raise
                     except Exception:
+                        emitted_delta = emitted_delta or attempt_emitted[0]
                         # 一旦用户看见文本，重试会让先前已废弃的部分回复留在
                         # SSE 流中，而 done 却对应另一轮结果；必须以 error 收尾。
                         if is_final_reply and emitted_delta:
@@ -361,18 +391,45 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                     messages.append(SystemMessage(render_template(node.system, ctx)))
                 messages.append(HumanMessage(render_template(node.prompt, ctx)))
                 writer = get_stream_writer()
-                chunks: list[str] = []
-                async for response in llm.astream(messages):
-                    content = getattr(response, "content", "")
-                    if isinstance(content, str) and content:
+
+                async def stream_attempt():
+                    chunks: list[str] = []
+                    normalizer = _TextStreamNormalizer()
+                    async for response in llm.astream(messages):
+                        content = getattr(response, "content", "")
+                        if not isinstance(content, str) or not content:
+                            continue
                         chunks.append(content)
-                        emitted_delta = True
-                        writer({"kind": "delta", "content": content})
-                content = "".join(chunks)
-                parsed = parse_output(content, node.parser, node.labels)
-                if node.output_schema:
-                    validate_schema(parsed, node.output_schema)
-                result = {node.output_key: parsed}
+                        # json/lines/classifier 的最终值经过解析，不存在能和原始
+                        # token 保证相等的文本语义，因此明确不产生 delta。
+                        if node.parser == "text":
+                            visible = normalizer.feed(content)
+                            if visible:
+                                emitted[0] = True
+                                writer({"kind": "delta", "content": visible})
+                    content = "".join(chunks)
+                    parsed = parse_output(content, node.parser, node.labels)
+                    if node.output_schema:
+                        validate_schema(parsed, node.output_schema)
+                    return parsed
+
+                for attempt in range(1, node.retries + 2):
+                    emitted = [False]
+                    try:
+                        call = stream_attempt()
+                        parsed = await asyncio.wait_for(call, node.timeout) if node.timeout else await call
+                        emitted_delta = emitted_delta or emitted[0]
+                        result = {node.output_key: parsed}
+                        break
+                    except (TimeoutError, asyncio.TimeoutError):
+                        emitted_delta = emitted_delta or emitted[0]
+                        raise
+                    except Exception:
+                        emitted_delta = emitted_delta or emitted[0]
+                        if emitted_delta or attempt >= node.retries + 1:
+                            raise
+                        if node.retry_delay > 0:
+                            await asyncio.sleep(node.retry_delay * (node.backoff ** (attempt - 1)))
             except Exception as exc:
                 # 对外已发出的文本无法撤回；若再走 on_error，done 会变成
                 # fallback 而与客户端已累计的 delta 不一致，必须让 SSE error 收尾。

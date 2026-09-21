@@ -300,6 +300,140 @@ nodes:
     assert all(event["kind"] != "done" for event in events)
 
 
+def test_execution_stream_llm_text_deltas_match_stripped_done_reply(monkeypatch):
+    """text parser 的前后空白不得让已发 delta 与 done.reply 不同。"""
+    yaml_text = """workflow:
+  name: stream-llm-whitespace
+  start: answer
+nodes:
+  answer:
+    type: llm
+    prompt: '{message}'
+    output_key: reply
+    next: END
+"""
+
+    class FakeLlm:
+        async def astream(self, messages):
+            yield AIMessageChunk(content="  hello")
+            yield AIMessageChunk(content=" world  ")
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
+    response = TestClient(build_execution_app("secret-token")).post(
+        "/execution-v1/respond/stream", json=_envelope(yaml_text),
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    events = [json.loads(line[5:].strip()) for line in response.text.splitlines() if line.startswith("data:")]
+    delta_reply = "".join(event["content"] for event in events if event["kind"] == "delta")
+    assert delta_reply == events[-1]["content"] == "hello world"
+
+
+def test_execution_stream_llm_retries_before_first_delta(monkeypatch):
+    """首个可见文本前的瞬态 LLM 失败仍遵从 node retries。"""
+    yaml_text = """workflow:
+  name: stream-llm-retry
+  start: answer
+nodes:
+  answer:
+    type: llm
+    prompt: '{message}'
+    output_key: reply
+    retries: 1
+    retry_delay: 0
+    next: END
+"""
+    attempts = []
+
+    class FakeLlm:
+        async def astream(self, messages):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError("temporary")
+            yield AIMessageChunk(content="recovered")
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
+    response = TestClient(build_execution_app("secret-token")).post(
+        "/execution-v1/respond/stream", json=_envelope(yaml_text),
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    events = [json.loads(line[5:].strip()) for line in response.text.splitlines() if line.startswith("data:")]
+    assert len(attempts) == 2
+    assert [event["kind"] for event in events] == ["meta", "delta", "done"]
+    assert events[-1]["content"] == "recovered"
+
+
+def test_execution_stream_llm_timeout_cancels_model_and_errors(monkeypatch):
+    """LLM node.timeout 覆盖整个 async stream，并取消卡住的上游。"""
+    yaml_text = """workflow:
+  name: stream-llm-timeout
+  start: answer
+nodes:
+  answer:
+    type: llm
+    prompt: '{message}'
+    output_key: reply
+    timeout: 0.01
+    next: END
+"""
+    closed = asyncio.Event()
+
+    class FakeLlm:
+        async def astream(self, messages):
+            try:
+                await asyncio.sleep(0.05)
+                yield AIMessageChunk(content="late")
+            finally:
+                closed.set()
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
+    response = TestClient(build_execution_app("secret-token")).post(
+        "/execution-v1/respond/stream", json=_envelope(yaml_text),
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    events = [json.loads(line[5:].strip()) for line in response.text.splitlines() if line.startswith("data:")]
+    assert [event["kind"] for event in events] == ["meta", "error"]
+    assert closed.is_set()
+
+
+def test_execution_stream_agent_timeout_cancels_model_and_errors(monkeypatch):
+    """Agent node.timeout 同样覆盖其整个模型 async stream。"""
+    yaml_text = _AGENT_YAML.replace("max_tool_iterations: 2", "max_tool_iterations: 2\n    timeout: 0.01")
+    closed = asyncio.Event()
+
+    class FakeBoundModel:
+        async def astream(self, messages):
+            try:
+                await asyncio.sleep(0.05)
+                yield AIMessageChunk(content="late")
+            finally:
+                closed.set()
+
+    class FakeLlm:
+        def bind_tools(self, tools): return FakeBoundModel()
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
+    payload = _envelope(yaml_text)
+    payload["agent_config"].pop("mcp_endpoint")
+    response = TestClient(build_execution_app("secret-token")).post(
+        "/execution-v1/respond/stream", json=payload,
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    events = [json.loads(line[5:].strip()) for line in response.text.splitlines() if line.startswith("data:")]
+    assert [event["kind"] for event in events] == ["meta", "error"]
+    assert closed.is_set()
+
+
+def test_execution_request_validation_never_reflects_model_api_key():
+    payload = _envelope(_AGENT_YAML)
+    payload["agent_config"]["model_api_key"] = {"malicious": "do-not-reflect-this-value"}
+    client = TestClient(build_execution_app("secret-token"))
+    for path in ("/execution-v1/respond", "/execution-v1/respond/stream"):
+        response = client.post(path, json=payload, headers={"Authorization": "Bearer secret-token"})
+        assert response.status_code == 422
+        assert response.json() == {"error": {"code": "invalid_request", "message": "invalid request"}}
+        assert "do-not-reflect-this-value" not in response.text
+
+
 def test_execution_stream_cancellation_propagates_and_closes_model_stream(monkeypatch):
     """取消消费者必须取消下游模型 async generator，且不能被转成 SSE error。"""
     payload = _envelope(_AGENT_YAML)

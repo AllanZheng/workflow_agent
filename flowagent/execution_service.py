@@ -140,6 +140,14 @@ def _receipt(config: ManagedAgentConfig) -> dict[str, Any]:
     }
 
 
+def _invalid_request_response() -> JSONResponse:
+    """请求模型校验失败不回显 Pydantic 的 input/error 文本。"""
+    return JSONResponse(
+        status_code=422,
+        content={"error": {"code": "invalid_request", "message": "invalid request"}},
+    )
+
+
 async def stream_managed(request: ExecutionRequest, mcp_workload_token: str = ""):
     """执行受管图，并把终态 reply 节点的真实模型增量转为事件。"""
     seq = 0
@@ -211,6 +219,9 @@ def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> Fa
             return JSONResponse(status_code=401, content={"error": {"code": "unauthorized"}})
         try:
             payload = ExecutionRequest.model_validate(await request.json())
+        except ValueError:
+            return _invalid_request_response()
+        try:
             return await execute_managed(payload, mcp_workload_token)
         except ValueError as exc:
             code = str(exc)
@@ -227,10 +238,8 @@ def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> Fa
             return JSONResponse(status_code=401, content={"error": {"code": "unauthorized"}})
         try:
             payload = ExecutionRequest.model_validate(await request.json())
-        except ValueError as exc:
-            code = str(exc)
-            status = 409 if code in {"config_digest_mismatch", "config_identity_mismatch"} else 422
-            return JSONResponse(status_code=status, content={"error": {"code": code}})
+        except ValueError:
+            return _invalid_request_response()
 
         async def events():
             emitted = 0
