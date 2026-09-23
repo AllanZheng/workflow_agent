@@ -66,6 +66,62 @@ def test_engine_loads_same_yaml(yaml_text):
     assert load_spec(__import__("yaml").safe_load(yaml_text)).workflow.name == "group-analysis"
 
 
+# ------------------------------------------------------------ Admin 发布契约
+
+def test_publication_contract_dry_run(monkeypatch):
+    """Admin 发布脚本 --dry-run：mcp_tools 注册 schema 与服务实现同源，
+    快照 YAML 与 configs 文件逐字一致且过受管门禁（阶段 3 契约对拍）。"""
+    import importlib.util
+
+    env = {
+        "GROUP_ANALYSIS_AGENT_ID": "604b6209-30da-4e57-bf93-73c6867cc101",
+        "GROUP_ANALYSIS_MODEL_CREDENTIAL_ID": "00000000-0000-4000-8000-0000000000a1",
+        "GROUP_ANALYSIS_IM_CREDENTIAL_ID": "00000000-0000-4000-8000-0000000000a2",
+        "GROUP_ANALYSIS_MODEL_NAME": "qwen3.5-35b",
+        "GROUP_ANALYSIS_MODEL_BASE_URL": "http://vllm.test/v1",
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    result = subprocess.run(
+        [sys.executable,
+         str(Path(__file__).resolve().parents[1]
+             / "deploy" / "group-analysis" / "publish_group_analysis.py"),
+         "--dry-run"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "dry-run ok" in result.stdout
+
+    # 进程内对拍快照结构（脚本 DB 依赖为惰性导入，无需 sqlalchemy）
+    spec = importlib.util.spec_from_file_location(
+        "publish_group_analysis",
+        Path(__file__).resolve().parents[1] / "deploy" / "group-analysis"
+        / "publish_group_analysis.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    import uuid as uuid_module
+
+    snapshot = module._snapshot(
+        uuid_module.UUID(env["GROUP_ANALYSIS_AGENT_ID"]),
+        uuid_module.UUID(env["GROUP_ANALYSIS_MODEL_CREDENTIAL_ID"]),
+        uuid_module.UUID(env["GROUP_ANALYSIS_IM_CREDENTIAL_ID"]),
+    )
+    tools = {t["exposed_name"]: t for t in snapshot["mcp_tools"]}
+    from services.im_tools_mcp.tools import (
+        FETCH_GROUP_MESSAGES_INPUT_SCHEMA, FIND_GROUP_INPUT_SCHEMA)
+
+    assert tools["find_group"]["input_schema"] == FIND_GROUP_INPUT_SCHEMA
+    assert tools["fetch_group_messages"]["input_schema"] == \
+        FETCH_GROUP_MESSAGES_INPUT_SCHEMA
+    assert tools["fetch_group_messages"]["timeout_ms"] >= 60_000  # 分段拉取慢
+    assert tools["find_group"]["url"].endswith("/mcp/")
+    assert tools["find_group"]["credential_id"] == env["GROUP_ANALYSIS_IM_CREDENTIAL_ID"]
+    # 快照 YAML = 仓库文件正文（改口径 = 改文件重发布）
+    assert snapshot["workflow"]["yaml"] == YAML_PATH.read_text(encoding="utf-8")
+    load_managed_spec(snapshot["workflow"]["yaml"])  # 入库前门禁复核
+
+
 # ---------------------------------------------------------------- 测试替身
 
 #: parse_args 节点的标准合法输出（无特殊断言的用例共用）

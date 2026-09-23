@@ -1,0 +1,41 @@
+# ============================================================================
+# 群分析助手 MVP 验收栈（阶段 3）
+# ----------------------------------------------------------------------------
+# 在 demo_platform/docker-compose.agent-mvp.yml（platform + workflow）基础上
+# 增加 im-tools-mcp 服务项；im / admin / auth 零改动，按既有部署接入。
+#
+# 用法（多 -f 合并为同一 compose 项目，服务间按服务名互通）：
+#   cd demo_platform
+#   docker compose -f docker-compose.agent-mvp.yml \
+#     -f ../workflow_agent/deploy/group-analysis/compose.group-analysis.yml \
+#     --env-file .env up -d --build
+#
+# 镜像与凭据约定：
+#   - im-tools-mcp 镜像由 workflow_agent 仓库 services/im_tools_mcp/Dockerfile
+#     构建（WORKFLOW_CONTEXT 指 workflow_agent 仓库根，默认按相对路径推算）；
+#   - IM_TOOLS_MCP_TOKEN：服务自身共享令牌，须与 Admin mcp_headers 凭据中
+#     下发给本服务的 Authorization 一致（留空=仅要求 Bearer 存在）；
+#   - IM_BASE_URL：im 服务地址。im 与本栈不同 compose 项目时，用宿主地址
+#     （如 http://host.docker.internal:8000）或把两个项目接入同一外部网络。
+# ============================================================================
+
+services:
+  im-tools-mcp:
+    build:
+      context: ${WORKFLOW_CONTEXT:-../workflow_agent}
+      dockerfile: services/im_tools_mcp/Dockerfile
+    environment:
+      IM_BASE_URL: ${IM_BASE_URL:?IM_BASE_URL is required}
+      IM_TOOLS_MCP_TOKEN: ${IM_TOOLS_MCP_TOKEN:-}
+      IM_TOOLS_MCP_HOST: 0.0.0.0
+      IM_TOOLS_MCP_PORT: "8090"
+      IM_TOOLS_TIMEOUT_SECONDS: "20"
+      IM_TOOLS_MAX_WINDOW_DAYS: "31"
+    ports:
+      - "${IM_TOOLS_PORT:-8091}:8090"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
