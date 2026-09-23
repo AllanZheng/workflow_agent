@@ -6,7 +6,7 @@ from .errors import ConfigError, FlowAgentError, OutputParseError, TemplateError
 from .llm import MockLLM, create_llm
 from .state import WFState
 
-__version__ = "0.9.0"  # 版本单一来源：pyproject 动态读取此值（评审 4.8）
+__version__ = "0.10.0"  # 版本单一来源：pyproject 动态读取此值（评审 4.8）
 
 __all__ = [
     "WorkflowSpec",

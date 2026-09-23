@@ -1,5 +1,29 @@
 # 更新日志
 
+## 0.10.0（2026-09-23）
+
+群分析助手 MVP（引擎零改动）：新增 im 群消息只读 MCP 适配服务与群分析受管工作流。
+
+### 新增（feature/group-analysis-mvp）
+
+- **im-tools-mcp 服务**（`services/im_tools_mcp/`）：Streamable HTTP MCP 端点
+  （mcp 2.2.0 官方 SDK）+ 最小 bearer 校验；`find_group`（模糊匹配 ≤10 条）与
+  `fetch_group_messages`（before_id 游标翻页 + 时间窗过滤 + segment_hours 分段
+  [segment_index 寻址] + max_chars 截断 + coverage 统计）；时间窗记号服务端解析
+  （ISO/缺年日期/now-Nd，引擎无时钟）；脱敏语料仅含昵称/时间/文本；
+  稳定错误码 im_unreachable/im_unauthorized/group_not_found/window_*。
+- **群分析受管工作流**（`configs/managed/group_analysis.yaml`）：parse_args →
+  fetch（agent 工具循环，每轮并行多段）→ stats → report（流式三段式报告）；
+  解析失败反问澄清（history 多轮收敛）；「无法完成分析」contains 路由；
+  im 故障用户可读降级；stats 失败不阻断报告；采样兜底 + 覆盖率声明；
+  分类口径内嵌 YAML，taxonomy_override 对话级覆盖。
+- **部署与发布**（`deploy/group-analysis/`）：compose 服务项（叠加 agent-mvp 栈）、
+  Admin 发布脚本（幂等；模型 key + im 令牌 mcp_headers 双凭据；schema 与服务实现
+  同源；--dry-run 离线预演）、L4 真实链路冒烟脚本（运维执行）、发布与联调手册。
+- **测试**：L1 服务单测 23 项（含 McpEdgeClient 真 MCP 对拍）；L2 工作流配置
+  12 项（双门禁固化 + 发布契约对拍）；L3 离线端到端 6 项（真实 execution 端点 +
+  真 MCP 协议 + 假 im + 注入式 LLM）。全量回归 382 passed，引擎零改动未被破坏。
+
 ## 0.9.0（2026-09-15）
 
 评审修复：`docs/PROJECT_REVIEW_2026-09-15.md` 确认的全部 10 项问题。
