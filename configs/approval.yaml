@@ -4,8 +4,8 @@
 #          → resume 恢复 → 按人工决定条件路由
 # 运行：  python -m flowagent run configs/approval.yaml --thread-id t1 --input "{\"ticket\": \"大额退款\"}"
 # 恢复：  python -m flowagent resume configs/approval.yaml --thread-id t1 --value 批准
-# 提示：跨进程恢复请设置 FLOWAGENT_CHECKPOINT=sqlite
-#      （及 FLOWAGENT_CHECKPOINT_PATH=<数据库文件>），使暂停状态落盘。
+# 提示：跨进程恢复请设置 FLOWAGENT_CHECKPOINT=postgres
+#      （及 FLOWAGENT_DATABASE_URL=<PostgreSQL连接串>），持久化暂停状态。
 # =====================================================================
 
 workflow:

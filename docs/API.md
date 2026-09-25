@@ -44,7 +44,7 @@ pydantic 模型（`extra="forbid"`，全部字段带校验）：
 engine = WorkflowEngine(spec, llm=None, checkpointer=None, hooks=None)
 ```
 
-构造即编译（`build_graph`：StateGraph + checkpointer + MemorySaver/SqliteSaver 工厂）。
+构造即编译（`build_graph`：StateGraph + checkpointer + MemorySaver/PostgresSaver 工厂）。
 `llm=None` 时按环境变量自动选择（无 `OPENAI_API_KEY` → MockLLM）。
 
 | 方法 | 说明 |
@@ -83,7 +83,8 @@ engine = WorkflowEngine(spec, hooks=hooks)
 
 ## make_checkpointer(setting=None)
 
-`"memory"`（默认）/ `"sqlite"`（`FLOWAGENT_CHECKPOINT_PATH` 指定库文件）。
+`"postgres"`（默认，`FLOWAGENT_DATABASE_URL` 必填）/ `"memory"`（显式测试）。
+使用 `with WorkflowEngine(...) as engine` 关闭连接；注入 saver 由调用方管理。
 返回对象可直接传入 `WorkflowEngine(checkpointer=...)`（生产可注入 PostgresSaver 等）。
 
 ## CLI
@@ -105,6 +106,6 @@ flowagent resume <cfg> --thread-id T [--value V]     # 省略 --value 进入交�
 | 变量 | 说明 |
 | --- | --- |
 | `FLOWAGENT_LLM` / `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `LLM_MODEL` / `LLM_TEMPERATURE` | LLM 接入 |
-| `FLOWAGENT_CHECKPOINT` / `FLOWAGENT_CHECKPOINT_PATH` | memory / sqlite |
+| `FLOWAGENT_CHECKPOINT` / `FLOWAGENT_DATABASE_URL` | memory / postgres |
 | `FLOWAGENT_TOOL_MODULES` | 工具模块白名单（逗号分隔前缀） |
 | `FLOWAGENT_CONFIG` / `FLOWAGENT_PORT` | api_server 示例的配置与端口 |

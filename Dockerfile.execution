@@ -1,10 +1,11 @@
 FROM python:3.12-slim
 
 WORKDIR /app
+ENV FLOWAGENT_CHECKPOINT=postgres
 COPY pyproject.toml README.md ./
 COPY flowagent ./flowagent
 COPY run_execution.py ./run_execution.py
-RUN pip install --no-cache-dir ".[api]"
+RUN pip install --no-cache-dir ".[api,postgres]"
 
 EXPOSE 8080
 CMD ["python", "run_execution.py"]

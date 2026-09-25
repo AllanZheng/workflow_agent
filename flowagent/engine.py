@@ -1,17 +1,14 @@
-"""引擎：把配置规格编译成 LangGraph 图并执行。
+"""工作流引擎：默认 PostgreSQL 持久化；测试可选择 memory。
 
-- build_graph: 遍历配置注册节点与边（固定边 / 并行扇出 / 条件边），
-  挂载 checkpointer（默认 MemorySaver，可用环境变量切换 SqliteSaver，
-  或直接注入自定义 checkpointer 实例）以支持按 thread_id 持久化/续跑/HITL。
-- WorkflowEngine: 面向使用者的门面（run / resume / stream / get_state / mermaid）。
-
-环境变量：
-- FLOWAGENT_CHECKPOINT: memory（默认）| sqlite
-- FLOWAGENT_CHECKPOINT_PATH: sqlite 数据库文件路径（默认 ./flowagent_checkpoints.sqlite）
+FLOWAGENT_DATABASE_URL 为连接串；引擎应使用 with 管理连接。
+异步服务使用 open_postgres_checkpointer 管理原生异步连接。
 """
 
+import asyncio
 import os
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 try:  # langgraph 1.x 起更名，保留旧名回退
     from langgraph.checkpoint.memory import MemorySaver
@@ -30,7 +27,44 @@ from .nodes import make_node_executor
 from .router import make_router
 from .state import WFState
 
-DEFAULT_SQLITE_PATH = "flowagent_checkpoints.sqlite"
+
+@asynccontextmanager
+async def open_postgres_checkpointer(dsn: str | None = None) -> AsyncIterator[object]:
+    """Open and initialize the async PostgreSQL saver for one app lifespan.
+
+    Checkpoints share the configured PostgreSQL service but use LangGraph's own
+    tables.  The serializer allowlist is deliberately strict because checkpoint
+    rows are deserialized on every resume.
+    """
+    connection_string = (dsn or os.getenv("FLOWAGENT_DATABASE_URL", "")).strip()
+    if not connection_string:
+        raise ConfigError("FLOWAGENT_DATABASE_URL is required for PostgreSQL checkpoints")
+    try:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+    except ImportError as exc:
+        raise ConfigError(
+            "PostgreSQL checkpoints require the postgres extra: "
+            "pip install '.[postgres]'"
+        ) from exc
+
+    from .postgres import SETUP_LOCK_SQL, SETUP_UNLOCK_SQL
+
+    serde = JsonPlusSerializer(allowed_msgpack_modules=None)
+    async with AsyncPostgresSaver.from_conn_string(
+        connection_string, serde=serde,
+    ) as saver:
+        # 与同步入口共用会话锁，避免多实例首次启动争抢迁移表。
+        while True:
+            cursor = await saver.conn.execute(SETUP_LOCK_SQL)
+            if (await cursor.fetchone())["acquired"]:
+                break
+            await asyncio.sleep(0.05)
+        try:
+            await saver.setup()
+        finally:
+            await saver.conn.execute(SETUP_UNLOCK_SQL)
+        yield saver
 
 _RECURSION_HINT = (
     "工作流在 recursion_limit={limit} 步内未结束，可能存在未设护栏的循环。"
@@ -39,31 +73,17 @@ _RECURSION_HINT = (
 
 
 def make_checkpointer(setting: str | None = None):
-    """根据配置字符串/环境变量创建 checkpointer。
-
-    - "memory"（默认）：MemorySaver，进程内存态，适合测试与演示；
-    - "sqlite"：SqliteSaver，跨进程/重启持久化，本地开发与 HITL 推荐；
-      路径取 FLOWAGENT_CHECKPOINT_PATH。
-    """
-    setting = (setting or os.getenv("FLOWAGENT_CHECKPOINT", "memory")).strip().lower()
+    """创建检查点；调用方负责关闭 PostgreSQL saver 连接。"""
+    setting = (setting or os.getenv("FLOWAGENT_CHECKPOINT", "postgres")).strip().lower()
     if setting == "memory":
         return MemorySaver()
-    if setting == "sqlite":
-        try:
-            from langgraph.checkpoint.sqlite import SqliteSaver
-        except ImportError as e:
-            raise ConfigError(
-                "sqlite checkpointer 需要安装 langgraph-checkpoint-sqlite："
-                "pip install langgraph-checkpoint-sqlite"
-            ) from e
-        import sqlite3
-
-        path = os.getenv("FLOWAGENT_CHECKPOINT_PATH", DEFAULT_SQLITE_PATH)
-        conn = sqlite3.connect(path, check_same_thread=False)
-        saver = SqliteSaver(conn)
-        saver.setup()  # 建表（幂等）
-        return saver
-    raise ConfigError(f"未知 FLOWAGENT_CHECKPOINT 配置: {setting}（可选 memory/sqlite）")
+    if setting == "postgres":
+        dsn = os.getenv("FLOWAGENT_DATABASE_URL", "").strip()
+        if not dsn:
+            raise ConfigError("FLOWAGENT_DATABASE_URL is required for PostgreSQL checkpoints")
+        from .postgres import create_postgres_saver
+        return create_postgres_saver(dsn)
+    raise ConfigError(f"未知 FLOWAGENT_CHECKPOINT 配置: {setting}（可选 memory/postgres）")
 
 
 def _resolve(target: str):
@@ -161,10 +181,39 @@ class WorkflowEngine:
     def __init__(self, spec: WorkflowSpec, llm=None, checkpointer=None, hooks=None):
         self.spec = spec
         self.llm = llm if llm is not None else create_llm()
-        self.checkpointer = checkpointer
+        self._owns_checkpointer = checkpointer is None
+        self.checkpointer = make_checkpointer() if checkpointer is None else checkpointer
         self.hooks = hooks
         self.durability = spec.workflow.durability
-        self.graph = build_graph(spec, self.llm, checkpointer, hooks)
+        try:
+            self.graph = build_graph(spec, self.llm, self.checkpointer, hooks)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        """只释放引擎创建的连接；注入 saver 由调用方管理。"""
+        if self._owns_checkpointer and hasattr(self.checkpointer, "close"):
+            self.checkpointer.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    async def aresume(self, value, thread_id: str) -> dict:
+        """异步恢复人工中断。"""
+        try:
+            return await self.graph.ainvoke(
+                Command(resume=value), self._config(thread_id), durability=self.durability,
+            )
+        except GraphRecursionError as e:
+            raise self._wrap_recursion() from e
+
+    async def aget_state(self, thread_id: str):
+        """异步读取持久化状态。"""
+        return await self.graph.aget_state(self._config(thread_id))
 
     def _config(self, thread_id: str) -> dict:
         return {
@@ -184,7 +233,7 @@ class WorkflowEngine:
         若图中包含 human 节点并触发 interrupt，返回值会带有 "__interrupt__"
         键（暂停挂起信息），可用 waiting_on() 读取并调用 resume() 恢复。
         """
-        tid = thread_id or uuid.uuid4().hex[:8]
+        tid = thread_id or uuid.uuid4().hex
         initial = {"vars": dict(inputs or {}), "trace": [], "loop_counts": {}, "error": None}
         try:
             return self.graph.invoke(
@@ -206,7 +255,7 @@ class WorkflowEngine:
 
     def stream(self, inputs: dict | None = None, thread_id: str | None = None):
         """逐步产出执行后的完整状态（stream_mode="values"），供 CLI/前端实时展示。"""
-        tid = thread_id or uuid.uuid4().hex[:8]
+        tid = thread_id or uuid.uuid4().hex
         initial = {"vars": dict(inputs or {}), "trace": [], "loop_counts": {}, "error": None}
         try:
             yield from self.graph.stream(
@@ -220,7 +269,7 @@ class WorkflowEngine:
 
     async def arun(self, inputs: dict | None = None, thread_id: str | None = None) -> dict:
         """异步运行（语义同 run），适合 FastAPI 等异步服务。"""
-        tid = thread_id or uuid.uuid4().hex[:8]
+        tid = thread_id or uuid.uuid4().hex
         initial = {"vars": dict(inputs or {}), "trace": [], "loop_counts": {}, "error": None}
         try:
             return await self.graph.ainvoke(
@@ -231,7 +280,7 @@ class WorkflowEngine:
 
     async def astream(self, inputs: dict | None = None, thread_id: str | None = None):
         """异步流式（语义同 stream）。"""
-        tid = thread_id or uuid.uuid4().hex[:8]
+        tid = thread_id or uuid.uuid4().hex
         initial = {"vars": dict(inputs or {}), "trace": [], "loop_counts": {}, "error": None}
         try:
             async for chunk in self.graph.astream(

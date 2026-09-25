@@ -98,7 +98,7 @@ def _cmd_show(args) -> int:
     except ConfigError as e:
         print(f"[配置错误] {e}", file=sys.stderr)
         return 2
-    engine = WorkflowEngine(spec)
+    engine = WorkflowEngine(spec, checkpointer=False)
     print(f"工作流: {spec.workflow.name} — {spec.workflow.description}")
     print(f"起始节点: {spec.workflow.start} | 递归上限: {spec.workflow.recursion_limit}")
     print("\n节点与流转:")
@@ -172,42 +172,41 @@ def _cmd_run(args) -> int:
         return 2
     _hint_inputs(spec, inputs)
 
-    engine = WorkflowEngine(spec)
-    thread_id = args.thread_id or uuid.uuid4().hex[:8]
-    llm_name = type(engine.llm).__name__
-    print(f"▶ 运行工作流 {spec.workflow.name}（LLM={llm_name}，thread_id={thread_id}）")
+    with WorkflowEngine(spec) as engine:
+        thread_id = args.thread_id or uuid.uuid4().hex
+        llm_name = type(engine.llm).__name__
+        print(f"▶ 运行工作流 {spec.workflow.name}（LLM={llm_name}，thread_id={thread_id}）")
 
-    try:
-        if args.stream:
-            print("\n=== 实时执行（流式） ===")
-            final = None
-            shown = 0
-            for chunk in engine.stream(inputs, thread_id=thread_id):
-                final = chunk
-                shown = _print_progress(shown, chunk)
-            if final is None:
-                final = engine.get_state(thread_id).values
-        else:
-            final = engine.run(inputs, thread_id=thread_id)
-    except FlowAgentError as e:
-        print(f"[运行失败] {e}", file=sys.stderr)
-        return 1
-    if getattr(args, "trace_out", None):
-        _write_trace(args.trace_out, final)
-    if getattr(args, "output", None) == "json":
-        pending = WorkflowEngine.waiting_on(final)
-        payload = {
-            "thread_id": thread_id,
-            "status": "waiting_human" if pending is not None else "finished",
-            "pending": pending,
-            "vars": final.get("vars") or {},
-            "error": final.get("error"),
-            "trace": final.get("trace") or [],
-        }
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 3 if pending is not None else 0
-    return _finish(final, thread_id)
-
+        try:
+            if args.stream:
+                print("\n=== 实时执行（流式） ===")
+                final = None
+                shown = 0
+                for chunk in engine.stream(inputs, thread_id=thread_id):
+                    final = chunk
+                    shown = _print_progress(shown, chunk)
+                if final is None:
+                    final = engine.get_state(thread_id).values
+            else:
+                final = engine.run(inputs, thread_id=thread_id)
+        except FlowAgentError as e:
+            print(f"[运行失败] {e}", file=sys.stderr)
+            return 1
+        if getattr(args, "trace_out", None):
+            _write_trace(args.trace_out, final)
+        if getattr(args, "output", None) == "json":
+            pending = WorkflowEngine.waiting_on(final)
+            payload = {
+                "thread_id": thread_id,
+                "status": "waiting_human" if pending is not None else "finished",
+                "pending": pending,
+                "vars": final.get("vars") or {},
+                "error": final.get("error"),
+                "trace": final.get("trace") or [],
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 3 if pending is not None else 0
+        return _finish(final, thread_id)
 
 def _write_trace(path: str, final: dict) -> None:
     """执行轨迹导出为 JSONL（每行一个轨迹事件，UTF-8）。"""
@@ -228,50 +227,49 @@ def _cmd_resume(args) -> int:
     except ConfigError as e:
         print(f"[配置错误] {e}", file=sys.stderr)
         return 2
-    engine = WorkflowEngine(spec)
-    # 预检：Command(resume=...) 落在未知/已结束的线程上会静默重新开跑，
-    # 这里显式拦截，避免误操作覆盖原流程。
-    snapshot = engine.get_state(args.thread_id)
-    if not snapshot.values:
-        print(
-            f"[恢复失败] 未找到 thread-id={args.thread_id} 的检查点。\n"
-            "  提示：跨进程恢复需要 sqlite 检查点"
-            "（FLOWAGENT_CHECKPOINT=sqlite，且与暂停时使用同一数据库文件）。",
-            file=sys.stderr,
-        )
-        return 1
-    payload = WorkflowEngine.pending_payload(snapshot)
-    if payload is None:
-        # 无挂起中断即已结束。注意不能用 snapshot.next 判断：
-        # human 节点内二次 interrupt（options 强校验重新询问）后 next 为空，
-        # 但 tasks 里仍有待恢复中断（与 API 侧判定保持一致）
-        print(
-            f"[恢复失败] thread-id={args.thread_id} 的运行已结束，没有待恢复的人工节点。",
-            file=sys.stderr,
-        )
-        return 1
+    with WorkflowEngine(spec) as engine:
+        # 预检：Command(resume=...) 落在未知/已结束的线程上会静默重新开跑，
+        # 这里显式拦截，避免误操作覆盖原流程。
+        snapshot = engine.get_state(args.thread_id)
+        if not snapshot.values:
+            print(
+                f"[恢复失败] 未找到 thread-id={args.thread_id} 的检查点。\n"
+                "  提示：跨进程恢复需要 PostgreSQL 检查点"
+                "（FLOWAGENT_CHECKPOINT=postgres，且与暂停时使用同一数据库文件）。",
+                file=sys.stderr,
+            )
+            return 1
+        payload = WorkflowEngine.pending_payload(snapshot)
+        if payload is None:
+            # 无挂起中断即已结束。注意不能用 snapshot.next 判断：
+            # human 节点内二次 interrupt（options 强校验重新询问）后 next 为空，
+            # 但 tasks 里仍有待恢复中断（与 API 侧判定保持一致）
+            print(
+                f"[恢复失败] thread-id={args.thread_id} 的运行已结束，没有待恢复的人工节点。",
+                file=sys.stderr,
+            )
+            return 1
 
-    options = payload.get("options") if isinstance(payload, dict) else None
-    value = _resolve_resume_value(args.value, payload, options)
-    if value is None:
-        return 2  # 交互式输入被取消
+        options = payload.get("options") if isinstance(payload, dict) else None
+        value = _resolve_resume_value(args.value, payload, options)
+        if value is None:
+            return 2  # 交互式输入被取消
 
-    print(f"▶ 恢复工作流 {spec.workflow.name}（thread_id={args.thread_id}）")
-    try:
-        final = engine.resume(value, thread_id=args.thread_id)
-    except FlowAgentError as e:
-        print(f"[恢复失败] {e}", file=sys.stderr)
-        return 1
-    except Exception as e:  # noqa: BLE001 - 线程不存在等 LangGraph 运行时错误
-        print(
-            f"[恢复失败] {type(e).__name__}: {e}\n"
-            "  提示：检查 --thread-id；跨进程恢复需要 sqlite 检查点\n"
-            "  （FLOWAGENT_CHECKPOINT=sqlite，且与暂停时使用同一数据库文件）。",
-            file=sys.stderr,
-        )
-        return 1
-    return _finish(final, args.thread_id)
-
+        print(f"▶ 恢复工作流 {spec.workflow.name}（thread_id={args.thread_id}）")
+        try:
+            final = engine.resume(value, thread_id=args.thread_id)
+        except FlowAgentError as e:
+            print(f"[恢复失败] {e}", file=sys.stderr)
+            return 1
+        except Exception as e:  # noqa: BLE001 - 线程不存在等 LangGraph 运行时错误
+            print(
+                f"[恢复失败] {type(e).__name__}: {e}\n"
+                "  提示：检查 --thread-id；跨进程恢复需要 PostgreSQL 检查点\n"
+                "  （FLOWAGENT_CHECKPOINT=postgres，且与暂停时使用同一数据库文件）。",
+                file=sys.stderr,
+            )
+            return 1
+        return _finish(final, args.thread_id)
 
 def _resolve_resume_value(raw_value, payload, options):
     """确定恢复值：--value 优先；缺省时交互式问答。
@@ -427,15 +425,20 @@ def main(argv=None) -> int:
 
     args = parser.parse_args(argv)
 
-    if args.command == "new":
-        return _cmd_new(args)
-    if args.command == "check":
-        return _cmd_check(args)
-    if args.command == "show":
-        return _cmd_show(args)
-    if args.command == "resume":
-        return _cmd_resume(args)
-    return _cmd_run(args)
+    try:
+        if args.command == "new":
+            return _cmd_new(args)
+        if args.command == "check":
+            return _cmd_check(args)
+        if args.command == "show":
+            return _cmd_show(args)
+        if args.command == "resume":
+            return _cmd_resume(args)
+        return _cmd_run(args)
+    except ConfigError as e:
+        print(f"[配置错误] {e}", file=sys.stderr)
+        return 2
+
 
 
 if __name__ == "__main__":

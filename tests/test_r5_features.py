@@ -143,8 +143,8 @@ class TestJsonOutput:
 
     def test_run_output_json_waiting_human(self, project_root, tmp_path, capsys):
         cfg = str(project_root / "configs" / "approval.yaml")
-        with __import__("tests.test_cli", fromlist=["_with_sqlite_env"])._with_sqlite_env(
-            tmp_path / "j.sqlite"
+        with __import__("tests.test_cli", fromlist=["_with_postgres_env"])._with_postgres_env(
+            tmp_path / "j.postgres"
         ):
             code = main(
                 ["run", cfg, "--output", "json", "--thread-id", "j1",

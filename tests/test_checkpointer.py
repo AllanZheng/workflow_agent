@@ -1,10 +1,11 @@
-"""测试：checkpointer 工厂与 sqlite 持久化。"""
+"""检查点工厂与同步/异步 PostgreSQL 持久化测试。"""
 
-import sqlite3
+import asyncio
+import os
+import uuid
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.sqlite import SqliteSaver
 
 from flowagent import WorkflowEngine, load_spec
 from flowagent.engine import make_checkpointer
@@ -12,66 +13,203 @@ from flowagent.errors import ConfigError
 from flowagent.llm import MockLLM
 
 SPEC = {
-    "workflow": {"name": "ck", "start": "a"},
+    "workflow": {"name": "checkpoint", "start": "ask"},
     "nodes": {
-        "a": {"type": "template", "template": "hi {x}", "output_key": "msg", "next": "END"}
+        "ask": {"type": "human", "message": "确认?", "output_key": "answer", "next": "done"},
+        "done": {"type": "template", "template": "结果 {answer}", "output_key": "reply", "next": "END"},
     },
 }
 
 
-class TestMakeCheckpointer:
-    def test_default_memory(self, monkeypatch):
-        monkeypatch.delenv("FLOWAGENT_CHECKPOINT", raising=False)
-        assert isinstance(make_checkpointer(), MemorySaver)
-        assert isinstance(make_checkpointer("memory"), MemorySaver)
-
-    def test_sqlite_by_argument(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("FLOWAGENT_CHECKPOINT_PATH", str(tmp_path / "a.sqlite"))
-        assert isinstance(make_checkpointer("sqlite"), SqliteSaver)
-
-    def test_sqlite_by_env(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("FLOWAGENT_CHECKPOINT", "sqlite")
-        monkeypatch.setenv("FLOWAGENT_CHECKPOINT_PATH", str(tmp_path / "b.sqlite"))
-        assert isinstance(make_checkpointer(), SqliteSaver)
-
-    def test_sqlite_missing_dependency_message(self, monkeypatch):
-        import builtins
-
-        real_import = builtins.__import__
-
-        def fake_import(name, *args, **kwargs):
-            if name == "langgraph.checkpoint.sqlite":
-                raise ImportError("boom")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", fake_import)
-        with pytest.raises(ConfigError):
-            make_checkpointer("sqlite")
-
-    def test_invalid_setting(self):
-        with pytest.raises(ConfigError):
-            make_checkpointer("redis")
+def test_default_requires_postgres_dsn(monkeypatch):
+    monkeypatch.delenv("FLOWAGENT_CHECKPOINT", raising=False)
+    monkeypatch.delenv("FLOWAGENT_DATABASE_URL", raising=False)
+    with pytest.raises(ConfigError, match="FLOWAGENT_DATABASE_URL"):
+        make_checkpointer()
+    assert isinstance(make_checkpointer("memory"), MemorySaver)
 
 
-class TestSqlitePersistence:
-    def _engine(self, db):
-        saver = SqliteSaver(sqlite3.connect(db, check_same_thread=False))
-        return WorkflowEngine(load_spec(SPEC), MockLLM(), checkpointer=saver)
+def test_invalid_setting():
+    with pytest.raises(ConfigError):
+        make_checkpointer("removed-backend")
 
-    def test_state_survives_new_engine_instance(self, tmp_path):
-        db = str(tmp_path / "ck.sqlite")
-        engine1 = self._engine(db)
-        final = engine1.run({"x": "持久"}, thread_id="p1")
-        engine2 = self._engine(db)  # 全新实例（模拟进程重启）
-        snap = engine2.get_state("p1").values
-        assert snap["vars"] == final["vars"]
-        assert snap["vars"]["msg"] == "hi 持久"
 
-    def test_injected_checkpointer_used_by_graph(self, tmp_path):
-        db = str(tmp_path / "ck2.sqlite")
-        engine = self._engine(db)
-        engine.run({"x": "y"}, thread_id="p2")
-        # 换一个 saver 连接同一文件验证落盘
-        saver2 = SqliteSaver(sqlite3.connect(db, check_same_thread=False))
-        engine3 = WorkflowEngine(load_spec(SPEC), MockLLM(), checkpointer=saver2)
-        assert engine3.get_state("p2").values["vars"]["x"] == "y"
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_persistent_human_resume_and_connection_close(monkeypatch, asynchronous):
+    monkeypatch.setenv("FLOWAGENT_CHECKPOINT", "postgres")
+    tid = uuid.uuid4().hex
+    with WorkflowEngine(load_spec(SPEC), MockLLM()) as first:
+        if asynchronous:
+            paused = asyncio.run(first.arun({}, tid))
+        else:
+            paused = first.run({}, tid)
+        assert first.waiting_on(paused)
+        connection = first.checkpointer.conn
+    assert connection.closed
+    with WorkflowEngine(load_spec(SPEC), MockLLM()) as second:
+        if asynchronous:
+            async def resume():
+                assert second.pending_payload(await second.aget_state(tid))
+                final = await second.aresume("通过", tid)
+                chunks = [item async for item in second.astream({}, uuid.uuid4().hex)]
+                assert chunks
+                return final
+            final = asyncio.run(resume())
+        else:
+            assert second.pending_payload(second.get_state(tid))
+            final = second.resume("通过", tid)
+            assert list(second.stream({}, uuid.uuid4().hex))
+        assert final["vars"]["reply"] == "结果 通过"
+    with make_checkpointer("postgres") as saver:
+        with WorkflowEngine(load_spec(SPEC), MockLLM(), checkpointer=saver):
+            pass
+        assert not saver.conn.closed
+    assert saver.conn.closed
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
+def test_setup_failure_closes_connection(monkeypatch):
+    from flowagent.postgres import ManagedPostgresSaver
+
+    connections = []
+
+    def fail_setup(saver):
+        connections.append(saver.conn)
+        raise RuntimeError("setup failed")
+
+    monkeypatch.setattr(ManagedPostgresSaver, "setup", fail_setup)
+    with pytest.raises(RuntimeError, match="setup failed"):
+        make_checkpointer("postgres")
+    assert connections[0].closed
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
+def test_native_async_engine_resume_and_close():
+    from flowagent.engine import open_postgres_checkpointer
+
+    async def roundtrip():
+        tid = uuid.uuid4().hex
+        async with open_postgres_checkpointer() as saver:
+            first = WorkflowEngine(load_spec(SPEC), MockLLM(), checkpointer=saver)
+            assert first.waiting_on(await first.arun({}, tid))
+            connection = saver.conn
+        assert connection.closed
+        async with open_postgres_checkpointer() as saver:
+            second = WorkflowEngine(load_spec(SPEC), MockLLM(), checkpointer=saver)
+            assert second.pending_payload(await second.aget_state(tid))
+            final = await second.aresume("通过", tid)
+            assert final["vars"]["reply"] == "结果 通过"
+    # Windows 的 psycopg 异步连接需要 selector 事件循环。
+    loop = asyncio.SelectorEventLoop()
+    try:
+        loop.run_until_complete(roundtrip())
+    finally:
+        loop.close()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
+def test_legacy_api_resume_after_lifespan_restart(monkeypatch):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from examples import api_server
+
+    monkeypatch.setenv("FLOWAGENT_CHECKPOINT", "postgres")
+    tid = uuid.uuid4().hex
+    with TestClient(api_server.app) as client:
+        response = client.post("/runs", json={"thread_id": tid, "inputs": {"ticket": "PG", "amount": 1}})
+        assert response.status_code == 202
+        connection = api_server.get_engine().checkpointer.conn
+    assert connection.closed
+    with TestClient(api_server.app) as client:
+        assert client.get(f"/runs/{tid}").json()["status"] == "waiting_human"
+        response = client.post(f"/runs/{tid}/resume", json={"value": "批准"})
+        assert response.status_code == 200
+        assert response.json()["vars"]["decision"] == "批准"
+
+
+def test_execution_service_default_requires_postgres_dsn(monkeypatch):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from flowagent.execution_service import build_execution_app
+
+    monkeypatch.delenv("FLOWAGENT_CHECKPOINT", raising=False)
+    monkeypatch.delenv("FLOWAGENT_DATABASE_URL", raising=False)
+    with pytest.raises(ConfigError, match="FLOWAGENT_DATABASE_URL"):
+        with TestClient(build_execution_app("test-token")):
+            pass
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
+def test_concurrent_sync_async_setup_on_fresh_schema_then_repeat():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    import psycopg
+
+    from flowagent.engine import open_postgres_checkpointer
+    from flowagent.postgres import SETUP_LOCK_SQL, SETUP_UNLOCK_SQL
+
+    dsn = os.environ["FLOWAGENT_DATABASE_URL"]
+
+    def initialize(index, barrier):
+        barrier.wait(timeout=10)
+        if index % 2:
+            async def open_async():
+                async with open_postgres_checkpointer(dsn) as saver:
+                    assert not saver.conn.closed
+            loop = asyncio.SelectorEventLoop()
+            try:
+                loop.run_until_complete(open_async())
+            finally:
+                loop.close()
+        else:
+            with make_checkpointer("postgres") as saver:
+                assert not saver.conn.closed
+
+    # 首次并发建表与已完成迁移后的重复启动都必须成功。
+    for _ in range(2):
+        barrier = Barrier(6)
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(initialize, index, barrier) for index in range(6)]
+            for future in futures:
+                future.result(timeout=30)
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        versions = conn.execute("SELECT v FROM checkpoint_migrations ORDER BY v").fetchall()
+        assert len(versions) > 1
+        assert len(versions) == len(set(versions))
+        assert conn.execute(SETUP_LOCK_SQL).fetchone()[0]
+        conn.execute(SETUP_UNLOCK_SQL)
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
+def test_async_setup_failure_releases_connection_and_lock(monkeypatch):
+    import psycopg
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    from flowagent.engine import open_postgres_checkpointer
+    from flowagent.postgres import SETUP_LOCK_SQL, SETUP_UNLOCK_SQL
+
+    connections = []
+
+    async def fail_setup(saver):
+        connections.append(saver.conn)
+        raise RuntimeError("async setup failed")
+
+    monkeypatch.setattr(AsyncPostgresSaver, "setup", fail_setup)
+
+    async def attempt():
+        with pytest.raises(RuntimeError, match="async setup failed"):
+            async with open_postgres_checkpointer():
+                pass
+    loop = asyncio.SelectorEventLoop()
+    try:
+        loop.run_until_complete(attempt())
+    finally:
+        loop.close()
+    assert connections[0].closed
+    with psycopg.connect(os.environ["FLOWAGENT_DATABASE_URL"], autocommit=True) as conn:
+        assert conn.execute(SETUP_LOCK_SQL).fetchone()[0]
+        conn.execute(SETUP_UNLOCK_SQL)

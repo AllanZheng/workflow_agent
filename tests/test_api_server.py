@@ -20,7 +20,15 @@ api_server = importlib.util.module_from_spec(_spec)
 sys.modules["api_server"] = api_server
 _spec.loader.exec_module(api_server)
 
-client = TestClient(api_server.app)
+client = None
+
+
+@pytest.fixture(autouse=True)
+def api_lifespan(_suite_memory_checkpoint):
+    global client
+    with TestClient(api_server.app) as running_client:
+        client = running_client
+        yield
 
 
 def test_health():

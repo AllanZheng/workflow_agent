@@ -13,7 +13,7 @@ from flowagent.llm import MockLLM
 from flowagent.nodes import NodeHooks
 from flowagent.tools import load_tool
 
-from .test_cli import APPROVAL_YAML, _with_sqlite_env
+from .test_cli import APPROVAL_YAML, _with_postgres_env
 
 APPROVAL_WITH_OPTIONS = """\
 workflow: {name: apo, start: ask}
@@ -67,7 +67,7 @@ class TestInteractiveResume:
     def test_resume_without_value_uses_interactive_input(self, tmp_path, capsys, monkeypatch):
         cfg = tmp_path / "ap.yaml"
         cfg.write_text(APPROVAL_YAML, encoding="utf-8")
-        with _with_sqlite_env(tmp_path / "i.sqlite"):
+        with _with_postgres_env(tmp_path / "i.postgres"):
             assert main(["run", str(cfg), "--thread-id", "it", "--input", '{"ticket": "C"}']) == 3
             answers = iter(["批准"])
             monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
@@ -81,7 +81,7 @@ class TestInteractiveResume:
         """4.1 语义更新：超范围答复失败关闭——重新询问而非放行。"""
         cfg = tmp_path / "apo.yaml"
         cfg.write_text(APPROVAL_WITH_OPTIONS, encoding="utf-8")
-        with _with_sqlite_env(tmp_path / "w.sqlite"):
+        with _with_postgres_env(tmp_path / "w.postgres"):
             assert main(["run", str(cfg), "--thread-id", "w1", "--input", '{"ticket": "D"}']) == 3
             code = main(["resume", str(cfg), "--thread-id", "w1", "--value", "随便写"])
             assert code == 3  # 无效值 → 仍等待人工（重新询问），不放行

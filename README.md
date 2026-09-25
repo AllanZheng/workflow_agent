@@ -3,7 +3,7 @@
 用 **YAML 自由编排节点**，引擎把配置编译成 **LangGraph 状态图**执行：
 条件路由、并行扇出/汇合、LLM 质检修订循环（带循环护栏）、工具节点、错误降级、
 **人工介入（HITL，多级审批链、选项强校验与交互式恢复）**、**子图嵌套编排（支持子图人工中断传播）**、节点**重试/超时/退避（超时不重试，防副作用重复）**、
-**LLM 输出 schema 强校验（失败关闭）**、**工具白名单（默认仅内置）**、**事件钩子与轨迹导出（含节点耗时）**、**sqlite 检查点持久化**、
+**LLM 输出 schema 强校验（失败关闭）**、**工具白名单（默认仅内置）**、**事件钩子与轨迹导出（含节点耗时）**、**postgres 检查点持久化**、
 **流式与异步 API**、**静态引用检查（check --strict）**、**FastAPI 服务化示例（真实 HTTP 202）**，
 开箱即用。无 API key 时自动降级 Mock，**离线可跑、测试全绿**。
 
@@ -30,12 +30,16 @@ python -m venv .venv
 # 从零创建一个新工作流（脚手架，生成即可 check/run）
 .venv/Scripts/flowagent new my_flow.yaml --name my_flow
 
+# 运行前配置 PostgreSQL 连接串（替换账号、密码和库名）：
+export FLOWAGENT_DATABASE_URL='postgresql://user:password@localhost:5432/workflow'  # Bash
+$env:FLOWAGENT_DATABASE_URL = 'postgresql://user:password@localhost:5432/workflow'  # PowerShell
+
 # 离线运行客服工单流水线（无 key 自动 Mock；--stream 实时输出）
 .venv/Scripts/flowagent run configs/customer_service.yaml --input '{"ticket": "商品有质量问题，要求退款"}' --stream
 
-# 人工审批工作流：运行即暂停（退出码3）→ 恢复继续（跨进程需 sqlite 检查点）
-export FLOWAGENT_CHECKPOINT=sqlite          # Bash
-$env:FLOWAGENT_CHECKPOINT = "sqlite"        # PowerShell（二选一）
+# 人工审批工作流：运行即暂停（退出码3）→ 恢复继续（跨进程需 postgres 检查点）
+export FLOWAGENT_CHECKPOINT=postgres          # Bash
+$env:FLOWAGENT_CHECKPOINT = "postgres"        # PowerShell（二选一）
 .venv/Scripts/flowagent run configs/approval.yaml --thread-id t1 --input '{"ticket": "大额退款", "amount": 8800}'
 .venv/Scripts/flowagent resume configs/approval.yaml --thread-id t1 --value 批准
 # 省略 --value 可进入交互式问答；轨迹可导出：--trace-out trace.jsonl
@@ -49,6 +53,13 @@ uvicorn examples.api_server:app --port 8080   # POST /runs → HTTP 202 等待�
 # 全量测试 + 覆盖率
 .venv/Scripts/python -m pytest --cov=flowagent --cov-report=term-missing
 ```
+
+## 受管 execution-v1 服务的 PostgreSQL 检查点
+
+`Dockerfile.execution` 默认启用 PostgreSQL 检查点。运行 `run_execution.py` 时需注入
+`FLOWAGENT_DATABASE_URL`；连接串应指向部署 PostgreSQL 中由 Workflow saver 管理的隔离 schema。
+服务在 lifespan 中打开异步 saver 并执行幂等 `setup()`，缺少连接串或 PostgreSQL extra 时会拒绝启动。
+手动安装可执行 `pip install -e ".[api,postgres]"`。CLI、旧 API 与异步执行服务均使用 PostgreSQL；测试可显式选择 memory。
 
 ## 接入真实 LLM（OpenAI 兼容，任选一家）
 
@@ -133,3 +144,16 @@ CHANGELOG.md          更新记录（当前 0.9.0）
 scripts/              冒烟脚本
 LICENSE               MIT
 ```
+
+### 引擎连接生命周期
+
+```python
+with WorkflowEngine(spec) as engine:
+    result = engine.run(inputs, thread_id=thread_id)
+```
+
+同步 saver 同时支持 `arun`、`astream`、`aresume`、`aget_state`，数据库操作在线程中执行。
+原生异步服务应在 lifespan 使用 `open_postgres_checkpointer()`，将 saver 注入引擎，
+并调用异步方法。注入的 saver 由调用方负责释放。缺少连接串会直接报配置错误。
+单元测试显式使用 `FLOWAGENT_CHECKPOINT=memory`；真实 PostgreSQL 测试设置
+`TEST_DATABASE_URL`，测试自行创建和清理隔离 schema。无需迁移旧数据。

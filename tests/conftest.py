@@ -38,3 +38,38 @@ def _suite_mock_llm(request, monkeypatch):
         return
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("FLOWAGENT_LLM", "auto")
+
+
+@pytest.fixture(autouse=True)
+def _suite_memory_checkpoint(monkeypatch):
+    """单元测试显式使用内存；生产默认 PostgreSQL。"""
+    monkeypatch.setenv("FLOWAGENT_CHECKPOINT", "memory")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_postgres(request, monkeypatch):
+    """持久化测试使用隔离 schema 并清理。"""
+    import os
+    import uuid
+
+    if Path(request.path).name not in {
+        "test_cli.py", "test_r2_features.py", "test_r5_features.py", "test_checkpointer.py",
+    } or not os.getenv("TEST_DATABASE_URL"):
+        return
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    schema = "workflow_suite_" + uuid.uuid4().hex
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute(f'CREATE SCHEMA "{schema}"')
+        monkeypatch.setenv("FLOWAGENT_DATABASE_URL", make_conninfo(
+            os.environ["TEST_DATABASE_URL"], options=f"-c search_path={schema}",
+        ))
+        request.addfinalizer(lambda: _drop_schema(os.environ["TEST_DATABASE_URL"], schema))
+
+
+def _drop_schema(dsn, schema):
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(f'DROP SCHEMA "{schema}" CASCADE')

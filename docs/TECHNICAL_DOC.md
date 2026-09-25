@@ -50,7 +50,7 @@
 - [LangChain 官方博客: Making it easier to build human-in-the-loop agents with interrupt](https://www.langchain.com/blog/making-it-easier-to-build-human-in-the-loop-agents-with-interrupt)
 - [Particula Tech: LangGraph vs CrewAI vs OpenAI Agents SDK](https://particula.tech/blog/langgraph-vs-crewai-vs-openai-agents-sdk-2026)
 - [Pickaxe: CrewAI vs LangGraph vs AutoGen (2026)](https://pickaxe.co/post/crewai-vs-langgraph-vs-autogen)
-- [langgraph-checkpoint-sqlite (PyPI)](https://pypi.org/project/langgraph-checkpoint-sqlite/)
+- [langgraph-checkpoint-postgres (PyPI)](https://pypi.org/project/langgraph-checkpoint-postgres/)
 - [社区讨论: LangGraph HITL 的节点二次执行问题](https://www.reddit.com/r/LangChain/comments/1rv2vs8/langgraphs_humanintheloop_has_a_double_execution/)
 
 ### 2.2 代码式引擎 vs 低代码平台
@@ -99,7 +99,7 @@ graph TB
         TLS["tools.py<br/>内置工具 + module:fn 动态加载"]
     end
     subgraph LangGraph 运行时
-        SG["StateGraph(WFState)<br/>+ MemorySaver / SqliteSaver"]
+        SG["StateGraph(WFState)<br/>+ MemorySaver / PostgresSaver"]
     end
     CLI --> CFG --> ENG --> SG
     ENG --> NOD & RTR
@@ -256,7 +256,7 @@ JSON（对象/数字会被解析）或裸字符串。
 
 实现要点（对应官方最佳实践与社区踩坑）：
 
-1. **必须挂 checkpointer**（本引擎默认已挂；跨进程恢复用 sqlite，见 5.2）；
+1. **必须挂 checkpointer**（本引擎默认已挂；跨进程恢复用 postgres，见 5.2）；
 2. **节点恢复时从头重跑**，interrupt 之前的代码会被再次执行——本引擎在 human 节点
    interrupt 前仅做纯模板渲染，天然幂等；
 3. **interrupt 控制流异常不可被重试/降级吞掉**：human 节点绕过重试/超时包装，
@@ -355,8 +355,8 @@ export LLM_MODEL=qwen2.5:7b
 
 | 变量 | 说明 |
 | --- | --- |
-| `FLOWAGENT_CHECKPOINT` | `memory`（默认，进程内存）/ `sqlite`（文件持久化） |
-| `FLOWAGENT_CHECKPOINT_PATH` | sqlite 数据库文件，默认 `./flowagent_checkpoints.sqlite` |
+| `FLOWAGENT_CHECKPOINT` | `postgres`（默认，持久化）/ `memory`（显式测试） |
+| `FLOWAGENT_DATABASE_URL` | PostgreSQL 连接串，必填 |
 
 **写入策略 `workflow.durability`**（LangGraph 1.x durability，默认 `exit`）：
 
@@ -373,8 +373,8 @@ workflow:
 ```
 
 按 [LangGraph 持久化指南](https://docs.langchain.com/oss/python/langgraph/persistence)：
-MemorySaver 适合测试演示，SqliteSaver 适合本地开发与跨进程 HITL，生产高并发建议
-PostgresSaver（向 `WorkflowEngine(checkpointer=...)` 注入即可，引擎不锁死后端）。
+PostgreSQL 是默认持久化后端；MemorySaver 仅用于显式测试。
+使用 `with WorkflowEngine(...)` 管理连接；注入 saver 的生命周期由调用方负责。
 
 ### 5.3 可观测：LangSmith 追踪（零代码接入）
 
@@ -415,8 +415,8 @@ python -m venv .venv
 .venv/Scripts/python -m flowagent run configs/customer_service.yaml \
     --input '{"ticket": "商品有质量问题，要求退款"}' --stream
 
-# 人工审批（暂停 → 恢复；跨进程请用 sqlite 检查点）
-export FLOWAGENT_CHECKPOINT=sqlite
+# 人工审批（暂停 → 恢复；跨进程请用 postgres 检查点）
+export FLOWAGENT_CHECKPOINT=postgres
 .venv/Scripts/python -m flowagent run   configs/approval.yaml --thread-id t1 \
     --input '{"ticket": "大额退款", "amount": 8800}'      # 退出码 3，已暂停
 .venv/Scripts/python -m flowagent resume configs/approval.yaml --thread-id t1 --value 批准
@@ -427,9 +427,9 @@ export FLOWAGENT_CHECKPOINT=sqlite
 # 综合示例：子图风险评级 → 路由 → 人工审批 → 重试处理 → 质检循环（mock 默认低风险直达）
 .venv/Scripts/python -m flowagent run configs/refund_approval.yaml --input '{"ticket": "T-100", "amount": 8800}'
 
-# Docker 部署（默认启动 API 服务，检查点落盘 /data）
+# Docker 部署（默认启动 API 服务，注入 FLOWAGENT_DATABASE_URL）
 docker build -t flowagent .
-docker run -p 8080:8080 -e OPENAI_API_KEY=你的key -e LLM_MODEL=glm-4.6 flowagent
+docker run -p 8080:8080 -e FLOWAGENT_DATABASE_URL -e OPENAI_API_KEY=你的key -e LLM_MODEL=glm-4.6 flowagent
 ```
 
 安装为库使用：`pip install -e .`（包名 `flowagent`，之后可直接 `from flowagent import WorkflowEngine`）。
@@ -470,9 +470,9 @@ print(engine.mermaid())                      # Mermaid 图源码
 | 集成 | test_engine | 图编译、循环护栏端到端、on_error、检查点、Mermaid、自动 LLM 工厂 |
 | 集成 | test_human | interrupt 暂停载荷、恢复路由、执行计数语义、默认 output_key、未知标签拒绝 |
 | 集成 | test_subgraph | 包裹/合并两种输出、父消费子输出、相对路径改写、自引用/互引用/缺失文件/缺字段 |
-| 集成 | test_checkpointer | 工厂各分支、缺依赖报错、sqlite 跨引擎实例持久化 |
+| 集成 | test_checkpointer | 工厂各分支、缺依赖报错、postgres 跨引擎实例持久化 |
 | 端到端 | test_workflows | 仓库示例配置全分支跑通：customer_service（4 路由分支、并行扇出、两种循环路径）、report_writer（循环护栏/直接过审）、refund_approval（低风险直达/人工批准/人工驳回/质检回炉） |
-| 端到端 | test_cli | check/show/run(--stream)/resume、输入文件、退出码 0/1/2/3、**跨进程 HITL 暂停-恢复（sqlite）**、`python -m` 入口 |
+| 端到端 | test_cli | check/show/run(--stream)/resume、输入文件、退出码 0/1/2/3、**跨进程 HITL 暂停-恢复（postgres）**、`python -m` 入口 |
 | 可选 | test_real_llm | 真实 LLM 集成（默认跳过，配置 `OPENAI_API_KEY` 后启用） |
 
 ```bash
@@ -504,7 +504,7 @@ print(engine.mermaid())                      # Mermaid 图源码
 **已知限制**
 
 - 线程池超时无法强杀底层调用（结果丢弃但线程短暂残留）；进程级强中断需改用子进程隔离；
-- sqlite checkpointer 写并发有限，生产高并发建议 PostgresSaver；
+- PostgreSQL 检查点连接必须在服务 lifespan 或引擎上下文中释放；
 - 模板为自研正则实现，不支持过滤器/表达式（可按需换 Jinja2）；
 - 超长流程的 trace 随状态持久化，会放大存储。
 
@@ -515,7 +515,7 @@ print(engine.mermaid())                      # Mermaid 图源码
 | `FlowAgentError: 工作流在 recursion_limit=N 步内未结束` | 存在未设护栏的循环。为循环边配 `max_loops`/`loop_exhaust`，或调大 `workflow.recursion_limit` |
 | `OutputParseError: 输出中未找到任何标签` | classifier 解析器未命中 `labels`；给该节点配 `on_error` 降级，或放宽提示词/标签 |
 | `FlowAgentError: 无法从LLM输出解析JSON` | 模型未输出合法 JSON；重试（`retries`）通常可解，或改用 `parser: text` 后自行解析 |
-| resume 报"未找到检查点" | 跨进程恢复必须 `FLOWAGENT_CHECKPOINT=sqlite` 且与暂停时用**同一数据库文件**；同进程默认 MemorySaver 即可 |
+| resume 报"未找到检查点" | 跨进程恢复必须 `FLOWAGENT_CHECKPOINT=postgres` 且与暂停时用**同一 PostgreSQL 数据库**；测试可显式使用 MemorySaver |
 | resume 报"运行已结束" | 该线程没有待恢复的中断；重新 `run` 即可 |
 | Mock 模式输出固定内容 | 无 `OPENAI_API_KEY` 自动降级 Mock（节点用 `mock_response`）；配置真实端点后即恢复正常 |
 | Windows 控制台中文乱码 | 设置 `PYTHONIOENCODING=utf-8`（CLI 已内置 stdout 重配置，管道场景仍建议显式设置） |

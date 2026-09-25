@@ -1,14 +1,12 @@
-"""新特性冒烟脚本：human HITL / 子图 / 重试 / 超时 / sqlite / 流式。"""
+"""新特性冒烟脚本：human HITL / 子图 / 重试 / 超时 / PostgreSQL / 流式。"""
 
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import sqlite3
 import tempfile
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 
 from flowagent import WorkflowEngine, load_spec
 from flowagent.llm import MockLLM
@@ -135,28 +133,12 @@ final = WorkflowEngine(timeout_spec, MockLLM()).run({})
 print("4) 超时降级:", final["error"]["type"], "->", final["vars"]["msg"])
 assert final["error"]["type"] == "TimeoutError"
 
-# ---------- 5) sqlite checkpointer 跨实例持久化 ----------
-db = tmp / "ck.sqlite"
-import os  # noqa: E402
-
-os.environ["FLOWAGENT_CHECKPOINT"] = "sqlite"
-os.environ["FLOWAGENT_CHECKPOINT_PATH"] = str(db)
-from flowagent.engine import build_graph  # noqa: E402
-
-build_graph(retry_spec, MockLLM())  # 环境变量生效
-from flowagent.engine import make_checkpointer as mk  # noqa: E402
-
-cp = mk()
-print("5) checkpointer:", type(cp).__name__)
-assert type(cp).__name__ == "SqliteSaver"
-del os.environ["FLOWAGENT_CHECKPOINT"]
-
-engine2 = WorkflowEngine(retry_spec, MockLLM(), checkpointer=SqliteSaver(sqlite3.connect(db, check_same_thread=False)))
-e2 = engine2.run({"hello": "world"}, thread_id="persist-1")
-engine3 = WorkflowEngine(retry_spec, MockLLM(), checkpointer=SqliteSaver(sqlite3.connect(db, check_same_thread=False)))
-snap = engine3.get_state("persist-1").values
-print("5) 跨实例持久化: hello =", snap["vars"].get("hello"))
-assert snap["vars"]["hello"] == "world"
+# ---------- 5) PostgreSQL 检查点跨实例持久化 ----------
+with WorkflowEngine(retry_spec, MockLLM()) as engine2:
+    engine2.run({"hello": "world"}, thread_id="persist-1")
+with WorkflowEngine(retry_spec, MockLLM()) as engine3:
+    snap = engine3.get_state("persist-1").values
+    assert snap["vars"]["hello"] == "world"
 
 # ---------- 6) 流式 ----------
 chunks = list(WorkflowEngine(parent_spec, MockLLM()).stream({"x": "流"}, thread_id="s1"))

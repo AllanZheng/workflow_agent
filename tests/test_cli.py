@@ -199,16 +199,17 @@ def test_run_stream_shows_error_degrade(project_root, tmp_path, capsys):
     assert "已按 on_error 降级" in out
 
 
-def _with_sqlite_env(db_path):
+def _with_postgres_env(db_path):
     import os
     from contextlib import contextmanager
 
     @contextmanager
     def _ctx():
-        keys = ("FLOWAGENT_CHECKPOINT", "FLOWAGENT_CHECKPOINT_PATH")
+        keys = ("FLOWAGENT_CHECKPOINT", "FLOWAGENT_DATABASE_URL")
         old = {k: os.environ.get(k) for k in keys}
-        os.environ["FLOWAGENT_CHECKPOINT"] = "sqlite"
-        os.environ["FLOWAGENT_CHECKPOINT_PATH"] = str(db_path)
+        os.environ["FLOWAGENT_CHECKPOINT"] = "postgres"
+        if not os.environ.get("TEST_DATABASE_URL"):
+            pytest.skip("TEST_DATABASE_URL is not configured")
         try:
             yield
         finally:
@@ -225,7 +226,7 @@ class TestResumeInProcess:
     def test_resume_unknown_thread(self, project_root, tmp_path, capsys):
         cfg = tmp_path / "ap.yaml"
         cfg.write_text(APPROVAL_YAML, encoding="utf-8")
-        with _with_sqlite_env(tmp_path / "u.sqlite"):
+        with _with_postgres_env(tmp_path / "u.postgres"):
             code = main(["resume", str(cfg), "--thread-id", "ghost", "--value", "批准"])
         assert code == 1
         assert "未找到" in capsys.readouterr().err
@@ -233,7 +234,7 @@ class TestResumeInProcess:
     def test_resume_completed_thread(self, project_root, tmp_path, capsys):
         cfg = tmp_path / "ap.yaml"
         cfg.write_text(APPROVAL_YAML, encoding="utf-8")
-        with _with_sqlite_env(tmp_path / "c.sqlite"):
+        with _with_postgres_env(tmp_path / "c.postgres"):
             assert main(["run", str(cfg), "--thread-id", "t", "--input", '{"ticket": "B"}']) == 3
             assert main(["resume", str(cfg), "--thread-id", "t", "--value", "批准"]) == 0
             code = main(["resume", str(cfg), "--thread-id", "t", "--value", "批准"])
@@ -259,7 +260,7 @@ class TestResumeInProcess:
             "    next: END\n",
             encoding="utf-8",
         )
-        with _with_sqlite_env(tmp_path / "b.sqlite"):
+        with _with_postgres_env(tmp_path / "b.postgres"):
             assert main(["run", str(cfg), "--thread-id", "tb", "--input", '{"ticket": "触发故障"}']) == 3
             code = main(["resume", str(cfg), "--thread-id", "tb", "--value", "批准"])
         assert code == 1
@@ -285,8 +286,9 @@ def _subprocess_env(db_path):
     import os
 
     env = dict(os.environ)
-    env["FLOWAGENT_CHECKPOINT"] = "sqlite"
-    env["FLOWAGENT_CHECKPOINT_PATH"] = str(db_path)
+    env["FLOWAGENT_CHECKPOINT"] = "postgres"
+    if not env.get("TEST_DATABASE_URL"):
+        pytest.skip("TEST_DATABASE_URL is not configured")
     env["PYTHONIOENCODING"] = "utf-8"
     return env
 
@@ -298,7 +300,7 @@ class TestHumanRoundtripCli:
 
         cfg = tmp_path / "ap.yaml"
         cfg.write_text(APPROVAL_YAML, encoding="utf-8")
-        db = tmp_path / "hitl.sqlite"
+        db = tmp_path / "hitl.postgres"
         py = sys.executable
         env = _subprocess_env(db)
 
@@ -325,7 +327,7 @@ class TestHumanRoundtripCli:
 
         cfg = tmp_path / "ap.yaml"
         cfg.write_text(APPROVAL_YAML, encoding="utf-8")
-        db = tmp_path / "empty.sqlite"
+        db = tmp_path / "empty.postgres"
         r = subprocess.run(
             [sys.executable, "-m", "flowagent", "resume", str(cfg),
              "--thread-id", "ghost", "--value", "批准"],
@@ -341,7 +343,7 @@ class TestHumanRoundtripCli:
 
         cfg = tmp_path / "ap.yaml"
         cfg.write_text(APPROVAL_YAML, encoding="utf-8")
-        db = tmp_path / "done.sqlite"
+        db = tmp_path / "done.postgres"
         env = _subprocess_env(db)
         # 第一次运行暂停在 human 节点
         subprocess.run(
@@ -366,15 +368,15 @@ class TestHumanRoundtripCli:
         assert "已结束" in r.stderr
 
     def test_in_process_resume_after_pause(self, project_root, tmp_path, capsys):
-        """进程内同引擎暂停→恢复（sqlite 不必需）。"""
+        """进程内同引擎暂停→恢复（postgres 不必需）。"""
         cfg = tmp_path / "ap.yaml"
         cfg.write_text(APPROVAL_YAML, encoding="utf-8")
-        db = tmp_path / "mem.sqlite"
         import os
 
-        old = {k: os.environ.get(k) for k in ("FLOWAGENT_CHECKPOINT", "FLOWAGENT_CHECKPOINT_PATH")}
-        os.environ["FLOWAGENT_CHECKPOINT"] = "sqlite"
-        os.environ["FLOWAGENT_CHECKPOINT_PATH"] = str(db)
+        old = {k: os.environ.get(k) for k in ("FLOWAGENT_CHECKPOINT", "FLOWAGENT_DATABASE_URL")}
+        os.environ["FLOWAGENT_CHECKPOINT"] = "postgres"
+        if not os.environ.get("TEST_DATABASE_URL"):
+            pytest.skip("TEST_DATABASE_URL is not configured")
         try:
             code1 = main(["run", str(cfg), "--thread-id", "m1", "--input", '{"ticket": "X"}'])
             assert code1 == 3
@@ -388,3 +390,12 @@ class TestHumanRoundtripCli:
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
+
+
+def test_run_without_postgres_dsn_returns_configuration_error(tmp_path, monkeypatch, capsys):
+    cfg = tmp_path / "approval.yaml"
+    cfg.write_text(APPROVAL_YAML, encoding="utf-8")
+    monkeypatch.setenv("FLOWAGENT_CHECKPOINT", "postgres")
+    monkeypatch.delenv("FLOWAGENT_DATABASE_URL", raising=False)
+    assert main(["run", str(cfg)]) == 2
+    assert "FLOWAGENT_DATABASE_URL" in capsys.readouterr().err

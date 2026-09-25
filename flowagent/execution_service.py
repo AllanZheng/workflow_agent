@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import json
+import os
 import uuid
 from typing import Any, Literal
 
@@ -13,7 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from .engine import build_graph
+from .engine import build_graph, open_postgres_checkpointer
 from .errors import ConfigError
 from .llm import MockLLM
 from .managed_config import load_managed_spec
@@ -90,7 +92,9 @@ def _managed_system_prompt(snapshot: dict[str, Any]) -> str:
     return "\n\n".join(section for section in sections if section)
 
 
-async def execute_managed(request: ExecutionRequest, mcp_workload_token: str = "") -> dict[str, Any]:
+async def execute_managed(
+    request: ExecutionRequest, mcp_workload_token: str = "", checkpointer=None,
+) -> dict[str, Any]:
     config = request.agent_config
     if _digest(config.snapshot) != config.config_digest:
         raise ValueError("config_digest_mismatch")
@@ -113,16 +117,23 @@ async def execute_managed(request: ExecutionRequest, mcp_workload_token: str = "
         agent_runtime = ManagedAgentRuntime(llm, mcp_client)
     # 每次请求创建独立模型客户端，不进入缓存；需要模型时禁止 auto->Mock 回退。
     graph = build_graph(
-        spec, llm=llm, checkpointer=False, agent_runtime=agent_runtime,
+        spec, llm=llm,
+        checkpointer=checkpointer if checkpointer is not None else False,
+        agent_runtime=agent_runtime,
     )
-    final = await graph.ainvoke({
+    initial = {
         "vars": {
             "message": request.message, "history": request.history,
             "system_prompt": _managed_system_prompt(config.snapshot),
             "skills": config.snapshot.get("skills", []),
         },
         "trace": [], "loop_counts": {}, "error": None,
-    })
+    }
+    graph_config = (
+        {"configurable": {"thread_id": request.execution_id}}
+        if checkpointer is not None else None
+    )
+    final = await graph.ainvoke(initial, config=graph_config)
     reply = str((final.get("vars") or {}).get("reply", ""))
     return {
         "execution_id": request.execution_id,
@@ -148,7 +159,9 @@ def _invalid_request_response() -> JSONResponse:
     )
 
 
-async def stream_managed(request: ExecutionRequest, mcp_workload_token: str = ""):
+async def stream_managed(
+    request: ExecutionRequest, mcp_workload_token: str = "", checkpointer=None,
+):
     """执行受管图，并把终态 reply 节点的真实模型增量转为事件。"""
     seq = 0
     yield {"seq": seq, "kind": "meta", "trace_id": request.execution_id, "framework": "workflow"}
@@ -174,7 +187,9 @@ async def stream_managed(request: ExecutionRequest, mcp_workload_token: str = ""
         mcp_client = McpEdgeClient(str(config.mcp_endpoint), mcp_workload_token) if has_endpoint else None
         agent_runtime = ManagedAgentRuntime(llm, mcp_client)
     graph = build_graph(
-        spec, llm=llm, checkpointer=False, agent_runtime=agent_runtime,
+        spec, llm=llm,
+        checkpointer=checkpointer if checkpointer is not None else False,
+        agent_runtime=agent_runtime,
         stream_final_reply=True,
     )
     initial = {
@@ -186,7 +201,13 @@ async def stream_managed(request: ExecutionRequest, mcp_workload_token: str = ""
         "trace": [], "loop_counts": {}, "error": None,
     }
     final: dict[str, Any] = {}
-    async for mode, event in graph.astream(initial, stream_mode=["custom", "values"]):
+    graph_config = (
+        {"configurable": {"thread_id": request.execution_id}}
+        if checkpointer is not None else None
+    )
+    async for mode, event in graph.astream(
+        initial, config=graph_config, stream_mode=["custom", "values"]
+    ):
         if mode == "custom" and isinstance(event, dict) and event.get("kind") == "delta":
             content = event.get("content")
             if isinstance(content, str) and content:
@@ -205,7 +226,22 @@ async def stream_managed(request: ExecutionRequest, mcp_workload_token: str = ""
 def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> FastAPI:
     if not internal_token:
         raise ValueError("FRAMEWORK_INTERNAL_TOKEN is required")
-    app = FastAPI(title="FlowAgent execution-v1")
+    checkpoint_mode = (os.getenv("FLOWAGENT_CHECKPOINT") or "postgres").strip().lower()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if checkpoint_mode == "postgres":
+            async with open_postgres_checkpointer() as saver:
+                app.state.checkpointer = saver
+                yield
+        elif checkpoint_mode in {"memory", "disabled"}:
+            # 测试或明确无状态的调用可以关闭持久化；生产默认必须提供连接串。
+            app.state.checkpointer = None
+            yield
+        else:
+            raise ConfigError("FLOWAGENT_CHECKPOINT must be postgres, memory, or disabled")
+
+    app = FastAPI(title="FlowAgent execution-v1", lifespan=lifespan)
 
     @app.get("/health")
     async def health():
@@ -222,7 +258,10 @@ def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> Fa
         except ValueError:
             return _invalid_request_response()
         try:
-            return await execute_managed(payload, mcp_workload_token)
+            return await execute_managed(
+                payload, mcp_workload_token,
+                checkpointer=getattr(request.app.state, "checkpointer", None),
+            )
         except ValueError as exc:
             code = str(exc)
             status = 409 if code in {"config_digest_mismatch", "config_identity_mismatch"} else 422
@@ -244,7 +283,10 @@ def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> Fa
         async def events():
             emitted = 0
             try:
-                async for event in stream_managed(payload, mcp_workload_token):
+                async for event in stream_managed(
+                    payload, mcp_workload_token,
+                    checkpointer=getattr(request.app.state, "checkpointer", None),
+                ):
                     emitted = event["seq"] + 1
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             except asyncio.CancelledError:
@@ -269,7 +311,7 @@ def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> Fa
         generation = body.get("generation")
         if not isinstance(continuity_key, str) or not continuity_key or not isinstance(generation, int):
             return JSONResponse(status_code=422, content={"error": {"code": "invalid_reset"}})
-        # 受管 Workflow 首期显式关闭 checkpoint，无服务端会话状态需要清理。
+        # 检查点按 execution_id 隔离；reset 不删除独立执行记录。
         return {"ok": True, "continuity_key": continuity_key, "generation": generation}
 
     return app

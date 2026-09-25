@@ -10,7 +10,7 @@
 - POST /runs/{thread_id}/resume {"value": ...} → 200 完成 / 202 仍在等待
 
 服务默认加载 configs/approval.yaml（可用环境变量 FLOWAGENT_CONFIG 覆盖）。
-检查点后端遵循 FLOWAGENT_CHECKPOINT 环境变量（跨进程/重启请用 sqlite）。
+检查点后端遵循 FLOWAGENT_CHECKPOINT 环境变量（跨进程/重启请用 PostgreSQL）。
 """
 
 import sys
@@ -20,12 +20,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # 允许直接脚本启动
 
 import os
+from contextlib import asynccontextmanager
 
-import flowagent
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+import flowagent
 from flowagent import WorkflowEngine, load_spec_file
 from flowagent.errors import ConfigError, FlowAgentError
 
@@ -35,10 +36,20 @@ CONFIG_PATH = os.getenv("FLOWAGENT_CONFIG", str(_DEFAULT_CONFIG))
 _ENGINE = None
 
 
-def get_engine() -> WorkflowEngine:
+@asynccontextmanager
+async def lifespan(app):
     global _ENGINE
+    with WorkflowEngine(load_spec_file(CONFIG_PATH)) as engine:
+        _ENGINE = engine
+        try:
+            yield
+        finally:
+            _ENGINE = None
+
+
+def get_engine() -> WorkflowEngine:
     if _ENGINE is None:
-        _ENGINE = WorkflowEngine(load_spec_file(CONFIG_PATH))
+        raise RuntimeError("API lifespan 尚未启动")
     return _ENGINE
 
 
@@ -62,6 +73,7 @@ _RESPONSES = {
 
 
 app = FastAPI(
+    lifespan=lifespan,
     title="flowagent API",
     description="配置驱动的 LangGraph 工作流智能体服务示例",
     version=flowagent.__version__,  # 版本单一来源：flowagent.__version__（评审 4.8）
@@ -87,7 +99,7 @@ def _result(final: dict, thread_id: str) -> JSONResponse:
 def create_run(body: RunIn):
     """启动一次运行；若流程包含 human 节点且命中，则返回 202 与待办问题。"""
     engine = get_engine()
-    thread_id = body.thread_id or uuid.uuid4().hex[:8]
+    thread_id = body.thread_id or uuid.uuid4().hex
     try:
         final = engine.run(body.inputs, thread_id=thread_id)
     except FlowAgentError as e:
