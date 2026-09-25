@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from .window import ANALYSIS_TIMEZONE
 from typing import Any
 
 from .config import Settings
@@ -78,6 +79,19 @@ FETCH_GROUP_MESSAGES_INPUT_SCHEMA: dict[str, Any] = {
             "minimum": 0,
             "description": "取第几段（0 起计，上限见响应 segments_total-1）",
         },
+    },
+    "required": ["conversation_id"],
+    "additionalProperties": False,
+}
+
+
+FETCH_GROUP_ANALYSIS_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "conversation_id": {"type": "integer", "minimum": 1},
+        "start": {"type": "string"},
+        "end": {"type": "string"},
+        "days": {"type": "integer", "minimum": 1, "maximum": 31},
     },
     "required": ["conversation_id"],
     "additionalProperties": False,
@@ -242,7 +256,7 @@ async def fetch_group_messages(
             ts = _parse_message_ts(message.get("created_at"))
             if ts is None:
                 continue
-            if ts > seg_end:
+            if ts >= seg_end:
                 continue
             if ts < seg_start:
                 # 消息按 id 单调对应时间，遇到早于窗口的消息即可停止翻页
@@ -283,10 +297,73 @@ async def fetch_group_messages(
     }
 
 
+async def fetch_group_analysis_input(
+    im: ImClient, arguments: dict[str, Any], *, settings: Settings
+) -> dict[str, Any]:
+    """Read one fixed window exactly once; report incomplete pagination honestly."""
+    conversation_id = arguments.get("conversation_id")
+    if type(conversation_id) is not int or conversation_id < 1:
+        raise ToolInputError("conversation_id 必须为正整数")
+    for key in ("start", "end"):
+        if arguments.get(key) is not None and not isinstance(arguments[key], str):
+            raise ToolInputError(f"{key} 必须为字符串")
+    days = arguments.get("days")
+    if days is not None and (type(days) is not int or not 1 <= days <= 31):
+        raise ToolInputError("days 必须为 1..31 的整数")
+    now = datetime.now(ANALYSIS_TIMEZONE)
+    window = resolve_window(arguments.get("start"), arguments.get("end"), days,
+                            now=now, max_days=settings.max_window_days)
+    conversation = await im.get_conversation(conversation_id)
+    if conversation.get("type") not in {"group", "channel"}:
+        raise ToolInputError("目标不是群会话")
+    nicknames = _sender_nickname_map(conversation)
+    rows: dict[int, tuple[datetime, str]] = {}
+    page_count = 0
+    partial_reasons: list[str] = []
+    for_limit = settings.max_pages_per_segment
+    async for page in im.iter_message_pages(conversation_id, max_pages=for_limit):
+        page_count += 1
+        for message in page:
+            message_id = message.get("id")
+            ts = _parse_message_ts(message.get("created_at"))
+            if type(message_id) is not int or ts is None:
+                continue
+            if not window.start <= ts < window.end or message_id in rows:
+                continue
+            line = _format_message(message, nicknames)
+            if line:
+                rows[message_id] = (ts, line)
+    if page_count >= for_limit:
+        partial_reasons.append("page_limit")
+    ordered = sorted(rows.items(), key=lambda item: (item[1][0], item[0]))
+    messages: list[dict[str, Any]] = []
+    used_chars = 0
+    for message_id, (ts, line) in ordered:
+        if len(messages) >= 1000:
+            partial_reasons.append("message_limit")
+            break
+        if used_chars + len(line) > 120000:
+            partial_reasons.append("char_limit")
+            break
+        messages.append({"message_ref": f"m{message_id}", "timestamp": ts.isoformat(),
+                         "text": line})
+        used_chars += len(line)
+    return {
+        "conversation_id": conversation_id,
+        "window": {"start": window.start.isoformat(),
+                   "end_exclusive": window.end.isoformat()},
+        "status": "partial" if partial_reasons else "complete",
+        "partial_reasons": partial_reasons,
+        "counts": {"fetched_unique": len(rows), "included": len(messages)},
+        "messages": messages,
+    }
+
+
 #: 工具名 -> (schema, 实现协程)；app.py 的 list/call 回调均由此分派
 TOOL_HANDLERS = {
     "find_group": (FIND_GROUP_INPUT_SCHEMA, find_group),
     "fetch_group_messages": (FETCH_GROUP_MESSAGES_INPUT_SCHEMA, fetch_group_messages),
+    "fetch_group_analysis_input": (FETCH_GROUP_ANALYSIS_INPUT_SCHEMA, fetch_group_analysis_input),
 }
 
 #: 面向用户的错误码说明（MCP is_error 结构化返回；不泄露内部细节）

@@ -11,16 +11,17 @@ import re
 from .errors import TemplateError
 
 _TOKEN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)\}")
+_MISSING = object()
 
 
-def get_path(obj, path: str):
+def get_path(obj, path: str, default=None):
     """按点路径从嵌套 dict 取值，取不到返回 None。"""
     cur = obj
     for part in path.split("."):
         if isinstance(cur, dict) and part in cur:
             cur = cur[part]
         else:
-            return None
+            return default
     return cur
 
 
@@ -29,9 +30,11 @@ def render_template(text: str, ctx: dict) -> str:
 
     def repl(m: re.Match) -> str:
         key = m.group(1)
-        val = get_path(ctx, key)
-        if val is None:
+        val = get_path(ctx, key, _MISSING)
+        if val is _MISSING:
             return m.group(0)
+        if val is None:
+            return ""
         if isinstance(val, (dict, list)):
             return json.dumps(val, ensure_ascii=False)
         return str(val)

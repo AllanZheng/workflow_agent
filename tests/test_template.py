@@ -46,8 +46,8 @@ class TestRenderTemplate:
         out = render_template("大纲：{outline}", ctx)
         assert json.loads(out.split("：", 1)[1]) == {"title": "T"}
 
-    def test_none_value_kept(self):
-        assert render_template("值 {x}", {"x": None}) == "值 {x}"
+    def test_none_value_renders_empty(self):
+        assert render_template("值 {x}", {"x": None}) == "值 "
 
     def test_invalid_input_raises_template_error(self):
         with pytest.raises(TemplateError):

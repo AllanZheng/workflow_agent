@@ -51,6 +51,30 @@ nodes:
 """
 
 
+def test_execution_stream_emits_template_delta_matching_done():
+    yaml_text = """workflow:
+  name: stream-template-only
+  start: answer
+nodes:
+  answer:
+    type: template
+    template: "Report: {message}\\nCompleted"
+    output_key: reply
+    next: END
+"""
+
+    async def collect():
+        return [event async for event in execution_service.stream_managed(
+            execution_service.ExecutionRequest.model_validate(_envelope(yaml_text)),
+        )]
+
+    events = asyncio.run(collect())
+
+    assert [event["kind"] for event in events] == ["meta", "delta", "done"]
+    assert [event["seq"] for event in events] == [0, 1, 2]
+    assert events[1]["content"] == events[-1]["content"] == "Report: current\nCompleted"
+
+
 def test_execution_stream_emits_model_delta_before_terminal_signal(monkeypatch):
     """真实 astream 的首块在模型完成前就必须穿透到服务事件流。"""
     release = asyncio.Event()

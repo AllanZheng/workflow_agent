@@ -253,6 +253,35 @@ async def test_fetch_segments_by_segment_hours():
     assert seg1["coverage"]["messages"] == 2  # 图片占位也算一条语料
 
 
+async def test_end_date_includes_day_and_boundary_message_is_not_duplicated():
+    from services.im_tools_mcp.tools import fetch_group_analysis_input
+    fake = FakeIm(
+        conversations=[_group(1, "项目协作群")],
+        details={1: _detail([{"user_id": 1001, "nickname": "阿明"}])},
+        messages={1: [
+            _msg(1, 1001, "2026-08-02T00:00:00+00:00", "边界"),
+            _msg(2, 1001, "2026-08-02T23:59:59.999999+00:00", "末尾"),
+            _msg(3, 1001, "2026-08-03T00:00:00+00:00", "次日"),
+        ]},
+    )
+    async with _make_im(fake) as im:
+        direct = await fetch_group_analysis_input(im, {
+            "conversation_id": 1, "start": "2026-08-01T00:00:00+00:00",
+            "end": "2026-08-03T00:00:00+00:00",
+        }, settings=SETTINGS)
+        seg0 = await fetch_group_messages(im, {
+            "conversation_id": 1, "start": "2026-08-01T00:00:00+00:00",
+            "end": "2026-08-03T00:00:00+00:00", "segment_index": 0,
+        }, settings=SETTINGS)
+        seg1 = await fetch_group_messages(im, {
+            "conversation_id": 1, "start": "2026-08-01T00:00:00+00:00",
+            "end": "2026-08-03T00:00:00+00:00", "segment_index": 1,
+        }, settings=SETTINGS)
+    assert [m["message_ref"] for m in direct["messages"]] == ["m1", "m2"]
+    assert "边界" not in seg0["corpus"]
+    assert "边界" in seg1["corpus"]
+
+
 async def test_fetch_segment_index_out_of_range():
     fake = _august_fixture()
     async with _make_im(fake) as im:
@@ -432,12 +461,12 @@ async def asgi_mcp_session(app, token: str = "im-token"):
             await http.aclose()
 
 
-async def test_mcp_lists_exactly_two_tools_with_contract_schemas():
+async def test_mcp_lists_group_analysis_tools_with_contract_schemas():
     app, _ = _app_with_fake(FakeIm())
     async with asgi_mcp_session(app) as session:
         result = await session.list_tools()
     by_name = {tool.name: tool for tool in result.tools}
-    assert set(by_name) == {"find_group", "fetch_group_messages"}
+    assert set(by_name) == {"find_group", "fetch_group_messages", "fetch_group_analysis_input"}
     assert by_name["find_group"].input_schema == FIND_GROUP_INPUT_SCHEMA
     assert by_name["fetch_group_messages"].input_schema == FETCH_GROUP_MESSAGES_INPUT_SCHEMA
 
@@ -489,7 +518,8 @@ async def test_flowagent_mcp_edge_client_round_trip():
             "http://testserver/mcp/", "im-token", session_factory=session_factory
         )
         tools = await client.list_tools()
-        assert {t["name"] for t in tools} == {"find_group", "fetch_group_messages"}
+        assert {t["name"] for t in tools} == {
+            "find_group", "fetch_group_messages", "fetch_group_analysis_input"}
         payload = await client.call_tool("find_group", {"name_query": "项目"})
         assert payload["count"] == 1
         with pytest.raises(McpEdgeError):

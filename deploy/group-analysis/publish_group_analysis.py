@@ -34,11 +34,13 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 from services.im_tools_mcp.tools import (  # noqa: E402
+    FETCH_GROUP_ANALYSIS_INPUT_SCHEMA,
     FETCH_GROUP_MESSAGES_INPUT_SCHEMA,
     FIND_GROUP_INPUT_SCHEMA,
 )
 
 from flowagent.managed_config import load_managed_spec  # noqa: E402
+from flowagent.execution_service import ManagedSnapshotV1  # noqa: E402
 
 
 class PublishConfigurationError(ValueError):
@@ -54,6 +56,16 @@ def _required(name: str) -> str:
 
 def _optional(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip() or default
+
+
+def _positive_int(name: str, default: int) -> int:
+    try:
+        result = int(_optional(name, str(default)))
+    except ValueError as exc:
+        raise PublishConfigurationError(f"{name} must be a positive integer") from exc
+    if result < 1:
+        raise PublishConfigurationError(f"{name} must be a positive integer")
+    return result
 
 
 def _uuid(name: str) -> uuid.UUID:
@@ -119,12 +131,16 @@ def _snapshot(agent_id: uuid.UUID, model_credential_id: uuid.UUID,
     model_base_url = _required("GROUP_ANALYSIS_MODEL_BASE_URL").rstrip("/")
     agent_name = _optional("GROUP_ANALYSIS_AGENT_NAME", "群分析助手")
 
-    def mcp_tool(exposed: str, schema: dict, description: str, timeout_ms: int) -> dict:
+    server_id = _positive_int("GROUP_ANALYSIS_MCP_SERVER_ID", 0)
+
+    def mcp_tool(exposed: str, schema: dict, description: str, tool_id: int) -> dict:
         return {
+            "tool_id": tool_id,
+            "server_id": server_id,
             "exposed_name": exposed,
             "remote_name": exposed,  # im-tools-mcp 侧同名暴露
+            "transport": "streamable_http",
             "url": im_tools_url,
-            "timeout_ms": timeout_ms,
             "credential_id": str(im_credential_id),
             "description": description,
             "input_schema": schema,
@@ -156,12 +172,9 @@ def _snapshot(agent_id: uuid.UUID, model_credential_id: uuid.UUID,
         },
         "mcp_tools": [
             mcp_tool(
-                "find_group", FIND_GROUP_INPUT_SCHEMA,
-                "按名称关键词查找 im 群，返回候选列表（≤10 条）", 15_000,
-            ),
-            mcp_tool(
-                "fetch_group_messages", FETCH_GROUP_MESSAGES_INPUT_SCHEMA,
-                "拉取指定群在分析窗口内某一段的格式化消息语料与覆盖率", 90_000,
+                "fetch_group_analysis_input", FETCH_GROUP_ANALYSIS_INPUT_SCHEMA,
+                "按固定群 ID 与时间窗读取去重消息，返回完整性状态",
+                _positive_int("GROUP_ANALYSIS_INPUT_TOOL_ID", 0),
             ),
         ],
         "skills": [],
@@ -199,6 +212,7 @@ async def publish() -> tuple[uuid.UUID, uuid.UUID, bool]:
     published_by = _optional("GROUP_ANALYSIS_PUBLISHED_BY", "group-analysis-mvp")
 
     snapshot = _snapshot(agent_id, model_credential_id, im_credential_id)
+    ManagedSnapshotV1.model_validate(snapshot)
     digest = _digest(snapshot)
     # mcp_headers 凭据内容 = 注入 im-tools-mcp 的 HTTP 头（平台按原样透传）
     im_headers = json.dumps(
@@ -212,6 +226,19 @@ async def publish() -> tuple[uuid.UUID, uuid.UUID, bool]:
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with sessions.begin() as session:
+            for item in snapshot["mcp_tools"]:
+                registered = (await session.execute(text(
+                    "SELECT t.name, t.enabled, s.status, s.transport, s.url "
+                    "FROM public.mcp_tools t JOIN public.mcp_servers s ON s.id=t.server_id "
+                    "WHERE t.id=:tool_id AND s.id=:server_id"
+                ), {"tool_id": item["tool_id"], "server_id": item["server_id"]})).mappings().one_or_none()
+                if (registered is None or registered["name"] != item["remote_name"]
+                        or not registered["enabled"]
+                        or registered["status"] != "enabled"
+                        or registered["transport"] != item["transport"]
+                        or str(registered["url"]).rstrip("/") != item["url"].rstrip("/")):
+                    raise PublishConfigurationError(
+                        f"registered MCP tool mismatch: {item['exposed_name']}")
             existing_workflow_id = await session.scalar(text(
                 "SELECT id FROM admin_system.agents WHERE agent_type='workflow' "
                 "LIMIT 1"
@@ -250,10 +277,11 @@ async def publish() -> tuple[uuid.UUID, uuid.UUID, bool]:
                 "ciphertext": im_ct, "nonce": im_nonce,
             })
             await session.execute(text(
-                "INSERT INTO admin_system.agents (id,agent_type,name,status) "
-                "VALUES (:id,'workflow',:name,'disabled') "
+                "INSERT INTO admin_system.agents (id,agent_key,agent_type,name,status) "
+                "VALUES (:id,:agent_key,'workflow',:name,'disabled') "
                 "ON CONFLICT (id) DO UPDATE SET updated_at=now()"
-            ), {"id": agent_id, "name": snapshot["agent"]["name"]})
+            ), {"id": agent_id, "agent_key": f"agent-{agent_id}",
+                "name": snapshot["agent"]["name"]})
             # 修订：同 digest 幂等
             revision_id = await session.scalar(text(
                 "SELECT id FROM admin_system.agent_config_revisions "
@@ -309,6 +337,7 @@ def main() -> int:
                 _uuid("GROUP_ANALYSIS_MODEL_CREDENTIAL_ID"),
                 _uuid("GROUP_ANALYSIS_IM_CREDENTIAL_ID"),
             )
+            ManagedSnapshotV1.model_validate(snapshot)
             digest = _digest(snapshot)
         except PublishConfigurationError as exc:
             print(f"[group-analysis-publish] configuration error: {exc}",

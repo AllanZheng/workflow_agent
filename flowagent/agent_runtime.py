@@ -13,6 +13,22 @@ class ManagedAgentRuntime:
     def __init__(self, llm, mcp_client=None) -> None:
         self.llm = llm
         self.mcp_client = mcp_client
+        self.loaded_skills: list[dict] = []
+
+    def _record_skill_load(self, tool_name: str, result) -> None:
+        if tool_name != "platform_load_skill" or not isinstance(result, dict):
+            return
+        details = result.get("result")
+        if not isinstance(details, dict):
+            return
+        loaded = {
+            "skill_key": details.get("skill_key"),
+            "metadata_version_id": details.get("metadata_version_id"),
+            "body_version_id": details.get("body_version_id"),
+            "content_hash": details.get("content_hash"),
+        }
+        if all(isinstance(value, str) and value for value in loaded.values()):
+            self.loaded_skills.append(loaded)
 
     async def _setup(self, message: str, system_prompt: str, history: list[dict] | None):
         # 受管 Agent 可显式禁用工具：纯文本工作流不应为了取得一个空列表
@@ -43,6 +59,7 @@ class ManagedAgentRuntime:
     async def run(self, message: str, system_prompt: str,
                   max_tool_iterations: int,
                   history: list[dict] | None = None) -> str:
+        self.loaded_skills = []
         allowed, schemas, messages = await self._setup(message, system_prompt, history)
         model = self.llm.bind_tools(schemas)
 
@@ -59,6 +76,7 @@ class ManagedAgentRuntime:
                 if name not in allowed:
                     raise ValueError(f"tool_not_allowed: {name}")
                 result = await self.mcp_client.call_tool(name, call.get("args") or {})
+                self._record_skill_load(name, result)
                 messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
         raise ToolIterationLimit("managed agent tool iteration limit exceeded")
 
@@ -69,6 +87,7 @@ class ManagedAgentRuntime:
 
         工具调用仍在本地循环完成；工具名、参数和结果均不写入调用方的文本流。
         """
+        self.loaded_skills = []
         allowed, schemas, messages = await self._setup(message, system_prompt, history)
         model = self.llm.bind_tools(schemas)
 
@@ -100,5 +119,6 @@ class ManagedAgentRuntime:
                 if name not in allowed:
                     raise ValueError(f"tool_not_allowed: {name}")
                 result = await self.mcp_client.call_tool(name, call.get("args") or {})
+                self._record_skill_load(name, result)
                 messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
         raise ToolIterationLimit("managed agent tool iteration limit exceeded")

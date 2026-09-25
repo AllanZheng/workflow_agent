@@ -112,7 +112,9 @@ class McpEdgeClient:
             raise McpEdgeError(f"MCP tool call failed: {name}") from exc
 
         if result.is_error:
-            raise McpEdgeError(f"MCP tool returned an error: {name}")
+            error_code = (result.structured_content or {}).get("error_code") if isinstance(result.structured_content, dict) else None
+            suffix = f" ({error_code})" if isinstance(error_code, str) else ""
+            raise McpEdgeError(f"MCP tool returned an error: {name}{suffix}")
         if result.structured_content is not None:
             return result.structured_content
         return self._normalize_content(result.content)

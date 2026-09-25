@@ -50,6 +50,9 @@ TOOL_DESCRIPTIONS = {
         "（[MM-DD HH:mm] 昵称: 内容），附覆盖率与分段元数据；窗口超过一天时"
         "按 segment_hours 分段、用 segment_index 逐段取。"
     ),
+    "fetch_group_analysis_input": (
+        "按已授权的 conversation_id 一次性读取固定时间窗，返回去重后的消息与完整性状态。"
+    ),
 }
 
 ImClientFactory = Callable[[str], ImClient]

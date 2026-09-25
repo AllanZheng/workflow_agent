@@ -464,6 +464,10 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
         started = time.monotonic()
         try:
             result = _run_with_reliability(name, node, state, llm, checkpointer)
+            if node.type == "template" and is_final_reply:
+                reply = str(result.get(node.output_key) or "")
+                if reply:
+                    get_stream_writer()({"kind": "delta", "content": reply})
         except GraphBubbleUp:
             raise  # interrupt 等控制流：LangGraph 运行时负责处理
         except Exception as exc:

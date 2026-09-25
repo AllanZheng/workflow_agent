@@ -66,6 +66,14 @@ def test_engine_loads_same_yaml(yaml_text):
     assert load_spec(__import__("yaml").safe_load(yaml_text)).workflow.name == "group-analysis"
 
 
+def test_old_revision_keeps_legacy_path(yaml_text):
+    current = load_managed_spec(yaml_text)
+    old_yaml = yaml_text.replace("  group_analysis_mode: deterministic\n", "")
+    assert old_yaml != yaml_text
+    assert current.workflow.group_analysis_mode == "deterministic"
+    assert load_managed_spec(old_yaml).workflow.group_analysis_mode == "legacy"
+
+
 # ------------------------------------------------------------ Admin 发布契约
 
 def test_publication_contract_dry_run(monkeypatch):
@@ -79,6 +87,8 @@ def test_publication_contract_dry_run(monkeypatch):
         "GROUP_ANALYSIS_IM_CREDENTIAL_ID": "00000000-0000-4000-8000-0000000000a2",
         "GROUP_ANALYSIS_MODEL_NAME": "qwen3.5-35b",
         "GROUP_ANALYSIS_MODEL_BASE_URL": "http://vllm.test/v1",
+        "GROUP_ANALYSIS_MCP_SERVER_ID": "7",
+        "GROUP_ANALYSIS_INPUT_TOOL_ID": "19",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -108,15 +118,14 @@ def test_publication_contract_dry_run(monkeypatch):
         uuid_module.UUID(env["GROUP_ANALYSIS_IM_CREDENTIAL_ID"]),
     )
     tools = {t["exposed_name"]: t for t in snapshot["mcp_tools"]}
-    from services.im_tools_mcp.tools import (
-        FETCH_GROUP_MESSAGES_INPUT_SCHEMA, FIND_GROUP_INPUT_SCHEMA)
+    from services.im_tools_mcp.tools import FETCH_GROUP_ANALYSIS_INPUT_SCHEMA
 
-    assert tools["find_group"]["input_schema"] == FIND_GROUP_INPUT_SCHEMA
-    assert tools["fetch_group_messages"]["input_schema"] == \
-        FETCH_GROUP_MESSAGES_INPUT_SCHEMA
-    assert tools["fetch_group_messages"]["timeout_ms"] >= 60_000  # 分段拉取慢
-    assert tools["find_group"]["url"].endswith("/mcp/")
-    assert tools["find_group"]["credential_id"] == env["GROUP_ANALYSIS_IM_CREDENTIAL_ID"]
+    assert set(tools) == {"fetch_group_analysis_input"}
+    assert tools["fetch_group_analysis_input"]["input_schema"] == FETCH_GROUP_ANALYSIS_INPUT_SCHEMA
+    assert tools["fetch_group_analysis_input"]["transport"] == "streamable_http"
+    assert "timeout_ms" not in tools["fetch_group_analysis_input"]
+    assert tools["fetch_group_analysis_input"]["url"].endswith("/mcp/")
+    assert tools["fetch_group_analysis_input"]["credential_id"] == env["GROUP_ANALYSIS_IM_CREDENTIAL_ID"]
     # 快照 YAML = 仓库文件正文（改口径 = 改文件重发布）
     assert snapshot["workflow"]["yaml"] == YAML_PATH.read_text(encoding="utf-8")
     load_managed_spec(snapshot["workflow"]["yaml"])  # 入库前门禁复核
@@ -192,6 +201,7 @@ async def _run(spec, *, llm, agent_runtime, message="分析群X最近7天", hist
                         agent_runtime=agent_runtime, stream_final_reply=stream)
     initial = {
         "vars": {"message": message, "history": history or [],
+                 "analysis_target": {"conversation_id": 11},
                  "system_prompt": "受管系统提示", "skills": []},
         "trace": [], "loop_counts": {}, "error": None,
     }
@@ -228,8 +238,8 @@ async def test_parse_args_mock_pipeline_produces_expected_dict(spec):
     args = final["vars"]["parsed_args"]
     assert args["group_query"] == "测试群"
     assert args["days"] == 7
-    # fetch agent 收到的 message 由 fetch_msg 模板渲染（群名进入任务文本）
-    assert "测试群" in captured_fetch[0]["message"]
+    # fetch agent 收到请求级 ID；群名不参与目标寻址。
+    assert "群会话 ID：11" in captured_fetch[0]["message"]
     assert "分段纪要" in captured_fetch[0]["system"]
 
 

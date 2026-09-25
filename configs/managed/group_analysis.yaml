@@ -1,7 +1,7 @@
 # 群分析助手受管工作流（Admin 发布内容 = 本文件正文，技术方案 §4）
 #
 # 流水线：parse_args → fetch(agent 工具循环) → stats → report(流式)
-#  - 解析失败/缺群名 → clarify 反问结束本轮（依赖 Demo 会话 history 多轮收敛）；
+#  - flow_agent 从用户话语提取群名；平台只从当前用户可读的群中解析并绑定 conversation_id；
 #  - fetch 无法完成（群找不到等）→ 输出以「无法完成分析」开头 → 路由转反问；
 #  - im 不可达等系统故障 → fetch on_error 降级为用户可读提示；
 #  - 超量窗口由 fetch agent 在工具循环内分段纪要（state 只留纪要不留原文），
@@ -13,21 +13,23 @@
 
 workflow:
   name: group-analysis
+  group_analysis_mode: deterministic
   description: 群分析助手（总结/分类统计/汇报要点）
   start: parse_args
-  inputs: [message, history, system_prompt, skills]
+  inputs: [message, history, system_prompt, skills, analysis_target]
   recursion_limit: 25
 
 nodes:
   # ------------------------------------------------------------ 参数解析
   parse_args:
     type: llm
-    description: 从对话文本+history 解析 群名/时间窗/口径覆盖；失败走反问
+    description: 从对话文本+history 解析目标群、时间窗和分类口径；失败走反问
     system: |
       你是参数解析器，只输出一个 JSON 对象，不输出任何其他文字。
       解析规则：
-      1. group_query：要分析的群名称关键词（用户提到"群X/项目X群"时取 X）。
-         结合此前对话（history）补全代词（如"那个群"）；无法确定群名时输出空串 ""。
+      1. group_query：提取用户明确说出的群名称或关键词；不推测群名。请求已有目标时填空串。
+         group_id：仅当用户明确给出群会话 ID 时填写正整数，否则填 null。最终群 ID 仍由平台核验并绑定。
+         用户本轮只补充群名或群 ID 时，可结合此前对话理解分析意图。
       2. start / end：时间范围记号，保持机器可读的原文：
          - 相对：now、now-7d、now-30d（"最近N天/上周"→ start=now-Nd, end=now）；
          - 绝对：YYYY-MM-DD 或 M月D日（用户没说年份就不补年份，服务端会推断）；
@@ -41,12 +43,13 @@ nodes:
 
       当前用户消息：{message}
 
-      请输出解析结果 JSON。
+      请输出解析结果 JSON，包含 group_query、group_id、start、end、days、taxonomy_override。
     parser: json
     output_key: parsed_args
-    mock_response: '{"group_query": "测试群", "start": "", "end": "", "days": 7, "taxonomy_override": ""}'
+    mock_response: '{"group_query": "测试群", "group_id": null, "start": "", "end": "", "days": 7, "taxonomy_override": ""}'
     output_schema:
-      group_query: {type: string}
+      group_query: {type: string, optional: true}
+      group_id: {type: integer, optional: true, min: 1}
       start: {type: string, optional: true}
       end: {type: string, optional: true}
       days: {type: integer, optional: true, min: 1, max: 31}
@@ -74,7 +77,7 @@ nodes:
     template: |
       请完成群分析的数据准备与分段纪要。
 
-      群名称关键词：{parsed_args.group_query}
+      群会话 ID：{analysis_target.conversation_id}（由平台授权，工具只能读取该 ID）
       时间范围记号：start={parsed_args.start}，end={parsed_args.end}，days={parsed_args.days}
       （记号由工具服务端解析；三者皆空时默认最近 7 天）
       分类口径覆盖（为空则使用默认口径）：{parsed_args.taxonomy_override}
@@ -88,8 +91,7 @@ nodes:
       你是群消息分析的数据准备助手，通过工具拉取群消息并产出分段纪要。
 
       执行流程：
-      1. 调用 find_group 用群名称关键词定位群，得到 conversation_id；
-         无匹配或多义时，最终回复必须以「无法完成分析：」开头并给出候选/请用户确认。
+      1. 目标群 conversation_id 已由平台确认，只调用 fetch_group_messages；不要找群、猜测或更换 ID。
       2. 调用 fetch_group_messages 拉取时间窗内消息：首次不带 segment_index（取第 0 段），
          从响应 segment.total 得知总段数；随后可以在同一轮并行调用其余 segment_index
          （一次工具调用循环上限约 8 轮，务必并行取段）。
@@ -118,7 +120,7 @@ nodes:
 
   fetch:
     type: agent
-    description: 受管 MCP 工具循环：find_group + 分段 fetch_group_messages → 分段纪要
+    description: 受管 MCP 工具循环：按固定 conversation_id 分段 fetch_group_messages → 分段纪要
     output_key: digest
     max_tool_iterations: 8
     timeout: 180

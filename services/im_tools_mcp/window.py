@@ -19,16 +19,19 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 # 相对记号：now / now-<N>d / now-<N>h
 _RELATIVE_RE = re.compile(r"^now(?:-(\d+)([dh]))?$", re.IGNORECASE)
 # 缺年数字日期：MM-DD（不允许纯数字歧义格式如 20260901）
 _MD_RE = re.compile(r"^(\d{1,2})-(\d{1,2})$")
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
 # 中文日期：[YYYY年]M月D日[ HH:mm[:ss]]
 _CN_RE = re.compile(
     r"^(?:(\d{4})\s*年)?\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"
     r"(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$"
 )
+ANALYSIS_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 class WindowError(ValueError):
@@ -91,8 +94,8 @@ def parse_time_token(token: str | None, *, now: datetime | None = None) -> datet
     text = str(token).strip()
     if not text or text.lower() in {"null", "none", "未指定", "默认"}:
         return None
-    now = now or datetime.now()
-    now_local = now.astimezone() if now.tzinfo else now
+    now = now or datetime.now(ANALYSIS_TIMEZONE)
+    now_local = now if now.tzinfo else now.replace(tzinfo=ANALYSIS_TIMEZONE)
 
     relative = _RELATIVE_RE.match(text)
     if relative:
@@ -151,14 +154,21 @@ def resolve_window(
 
     护栏：start >= end -> window_invalid；跨度 > max_days 天 -> window_too_large。
     """
-    resolved_end = parse_time_token(end, now=now) or (now or datetime.now()).astimezone(
+    reference_now = now or datetime.now(ANALYSIS_TIMEZONE)
+    resolved_end = parse_time_token(end, now=reference_now) or reference_now.astimezone(
         timezone.utc
     )
+    if end and (_ISO_DATE_RE.fullmatch(end.strip()) or _MD_RE.fullmatch(end.strip())
+                or (_CN_RE.fullmatch(end.strip()) and not _CN_RE.fullmatch(end.strip()).group(4))):
+        # A bare end date includes that whole local calendar day.  Exclusive
+        # next-midnight avoids losing sub-second messages at 23:59:59.
+        local_end = resolved_end.astimezone(reference_now.tzinfo or ANALYSIS_TIMEZONE)
+        resolved_end = (local_end + timedelta(days=1)).astimezone(timezone.utc)
     if start is None and not str(end or "").strip() and days is None:
         days = 7
     if days is not None and parse_time_token(start, now=now) is None and not str(end or "").strip():
         # 纯相对窗口：days 天前的同一时刻 -> now
-        now_utc = (now or datetime.now()).astimezone(timezone.utc)
+        now_utc = reference_now.astimezone(timezone.utc)
         resolved_start = now_utc - timedelta(days=days)
         resolved_end = now_utc
     else:

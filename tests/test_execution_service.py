@@ -1,5 +1,6 @@
 import hashlib
 import json
+from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
@@ -34,6 +35,37 @@ def _envelope():
 def test_execution_service_requires_internal_bearer():
     client = TestClient(build_execution_app("secret-token"))
     assert client.post("/execution-v1/respond", json=_envelope()).status_code == 401
+
+
+def test_execution_service_reports_conservative_workflow_capabilities():
+    client = TestClient(build_execution_app("secret-token"))
+    denied = client.get("/capabilities")
+    response = client.get("/capabilities", headers={"Authorization": "Bearer secret-token"})
+
+    assert denied.status_code == 401
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["framework_id"] == "workflow"
+    assert payload["runtime_mode"] == "workflow_managed"
+    assert payload["basic"] == {"respond": True, "stream": True, "config_receipt": True}
+    assert payload["control"]["hitl_modes"] == []
+    assert payload["tools"]["managed_mcp"] is False
+
+
+def test_execution_app_opens_postgres_saver_during_lifespan(monkeypatch):
+    saver = object()
+
+    @asynccontextmanager
+    async def fake_open_postgres_checkpointer():
+        yield saver
+
+    monkeypatch.setenv("FLOWAGENT_CHECKPOINT", "postgres")
+    monkeypatch.setenv("FLOWAGENT_DATABASE_URL", "postgresql://configured-by-test")
+    monkeypatch.setattr(execution_service, "open_postgres_checkpointer", fake_open_postgres_checkpointer)
+    app = build_execution_app("secret-token")
+
+    with TestClient(app):
+        assert app.state.checkpointer is saver
 
 
 def test_execution_service_accepts_authenticated_reset_without_checkpoint_state():

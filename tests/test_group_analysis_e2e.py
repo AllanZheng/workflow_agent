@@ -107,17 +107,11 @@ class AgentLoopModel:
         tool_messages = [m for m in messages if _is_tool_message(m)]
         if not tool_messages:
             self.issued = 1
-            return self._call("find_group", {"name_query": "项目"}, "find")
+            return self._call("fetch_group_messages", {"conversation_id": 11, "days": self.days}, "seg0")
         assert len(tool_messages) >= self.issued, "工具结果未到齐不应再次进入循环"
 
         payload = _parse_tool_payload(str(tool_messages[-1].content))
-        if "groups" in payload and self.conversation_id is None:
-            assert payload["groups"], "find_group 应命中候选群"
-            self.conversation_id = payload["groups"][0]["conversation_id"]
-            self.issued += 1
-            return self._call("fetch_group_messages", {
-                "conversation_id": self.conversation_id, "days": self.days,
-            }, "seg0")
+        self.conversation_id = 11
 
         segments = _segment_payloads(messages)
         assert segments, "fetch 结果应携带分段元数据"
@@ -188,12 +182,18 @@ class E2ELLM:
 
     def bind_tools(self, tools) -> AgentLoopModel:
         # agent_runtime 传入 OpenAI 形状 schema：{"type":"function","function":{...}}
-        assert {tool["function"]["name"] for tool in tools} == {
-            "find_group", "fetch_group_messages"}
+        assert {tool["function"]["name"] for tool in tools} == {"fetch_group_messages"}
         return AgentLoopModel(self.last_days, sample_cap=self.sample_cap)
 
     def invoke(self, messages, config=None, **kwargs):
         prompt = str(messages[-1].content)
+        if "只输出 JSON" in prompt and "消息：" in prompt:
+            batch = json.loads(prompt.split("消息：", 1)[1])
+            category = "技术类" if "技术类" in prompt else "问题"
+            return AIMessage(content=json.dumps({"assignments": [
+                {"message_ref": item["message_ref"], "category": category}
+                for item in batch
+            ]}, ensure_ascii=False))
         if "请输出解析结果 JSON" in prompt:
             self.parse_prompts.append(prompt)
             if self.parse_bad:
@@ -255,7 +255,7 @@ def _fake_im(days: int, per_day: int = 3) -> FakeIm:
 
 
 def _envelope(message: str, history: list[dict] | None = None,
-              execution_id: str = "e2e-e1") -> dict:
+              execution_id: str = "e2e-e1", conversation_id: int | None = 11) -> dict:
     snapshot = {
         "schema_version": 1,
         "agent": {"id": AGENT_ID, "type": "workflow", "name": "群分析助手"},
@@ -269,7 +269,7 @@ def _envelope(message: str, history: list[dict] | None = None,
     digest = hashlib.sha256(json.dumps(
         snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode()).hexdigest()
-    return {
+    envelope = {
         "protocol_version": "execution-v1", "execution_id": execution_id,
         "trace": {"trace_id": execution_id}, "binding_generation": 1,
         "continuity_key": "c-e2e", "message": message, "history": history or [],
@@ -281,6 +281,9 @@ def _envelope(message: str, history: list[dict] | None = None,
             "mcp_endpoint": "http://edge.test/mcp/runtime/e2e-e1/",
         },
     }
+    if conversation_id is not None:
+        envelope["analysis_target"] = {"conversation_id": conversation_id}
+    return envelope
 
 
 class E2EStack:
@@ -367,12 +370,13 @@ class E2EStack:
         )
 
 
-async def _respond(stack: E2EStack, message: str, history: list[dict] | None = None):
+async def _respond(stack: E2EStack, message: str, history: list[dict] | None = None,
+                   conversation_id: int | None = 11):
     """在 im-tools-mcp lifespan 就绪的前提下打 respond 端点。"""
     async with stack.lifespan():
         async with stack.client() as client:
             return await client.post(
-                "/execution-v1/respond", json=_envelope(message, history),
+                "/execution-v1/respond", json=_envelope(message, history, conversation_id=conversation_id),
                 headers={"Authorization": "Bearer internal-token"},
             )
 
@@ -393,22 +397,40 @@ async def test_normal_seven_day_analysis_full_chain(monkeypatch):
     assert "workflow.yaml" in receipt["applied_fields"]
 
 
+async def test_custom_taxonomy_is_applied_to_program_counts(monkeypatch):
+    llm = E2ELLM(parse_output=(
+        '{"start":"","end":"","days":7,'
+        '"taxonomy_override":"按消息性质分技术类/管理类"}'
+    ))
+    stack = E2EStack(_fake_im(days=7), llm)
+    stack.install(monkeypatch)
+    response = await _respond(stack, "按消息性质分技术类/管理类分析最近7天")
+    assert response.status_code == 200
+    result = response.json()["metadata"]["analysis_result"]
+    assert result["status"] == "complete"
+    assert result["statistics"]["total_messages"] > 0
+    assert result["statistics"]["categories"][0]["name"] == "技术类"
+    assert "问题：" not in response.json()["reply"]
+
+
 async def test_missing_group_name_clarifies_then_converges(monkeypatch):
-    """用例 2：缺群名 → 反问；补充后下一轮成功（history 注入 parse 上下文）。"""
-    stack = E2EStack(_fake_im(days=7), E2ELLM(parse_bad=True))
+    """缺目标 ID 先反问；给出 ID 后继续分析。"""
+    stack = E2EStack(_fake_im(days=7), E2ELLM(parse_output=(
+        '{"group_query":"","group_id":null,"start":"","end":"",'
+        '"days":7,"taxonomy_override":""}'
+    )))
     stack.install(monkeypatch)
     # 会话管理器每实例只能 run 一次：两轮请求共享同一次生命周期（嵌套进入）
     async with stack.lifespan():
-        first = await _respond(stack, "帮我分析一下群")
+        first = await _respond(stack, "帮我分析一下群", conversation_id=None)
         assert first.status_code == 200
-        assert "请补充分析所需的信息" in first.json()["reply"]
+        assert "请选择要分析的群" in first.json()["reply"]
 
-        stack.llm.parse_bad = False  # 用户补充后解析可成功
         history = [
             {"role": "user", "content": "帮我分析一下群"},
             {"role": "assistant", "content": first.json()["reply"]},
         ]
-        second = await _respond(stack, "群名是项目协作群", history=history)
+        second = await _respond(stack, "分析最近7天", history=history, conversation_id=11)
         assert second.status_code == 200
         assert "## 汇报要点" in second.json()["reply"]
     # history 确实进入了 parse_args 提示词（多轮收敛的管线证明）
@@ -450,7 +472,7 @@ async def test_segment_overflow_falls_back_to_sampling(monkeypatch):
 async def test_im_unreachable_degrades_gracefully(monkeypatch):
     """用例 5：im 不可达 → 用户可读错误提示，请求仍 200（会话不崩）。"""
     fake_im = _fake_im(days=7)
-    fake_im.forced_status["/conversations"] = 503
+    fake_im.forced_status["/conversations/11"] = 503
     stack = E2EStack(fake_im, E2ELLM())
     stack.install(monkeypatch)
     response = await _respond(stack, "分析项目协作群最近7天")

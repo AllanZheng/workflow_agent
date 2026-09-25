@@ -164,6 +164,7 @@ class WorkflowMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    group_analysis_mode: Literal["legacy", "deterministic"] = "legacy"
     description: str = ""
     start: str
     recursion_limit: int = 50
