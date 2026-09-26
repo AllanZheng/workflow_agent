@@ -227,6 +227,8 @@ def test_v3_model_authorization_is_checked_before_every_model_call_and_receipt_i
         "skill_id": "604b6209-30da-4e57-bf93-73c6867cc101",
         "metadata_version_id": "704b6209-30da-4e57-bf93-73c6867cc101",
         "body_version_id": "804b6209-30da-4e57-bf93-73c6867cc101",
+        "body_hash": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "outcome": "success",
     }]
     assert body not in json.dumps(receipt)
     assert "model-secret" not in json.dumps(receipt)

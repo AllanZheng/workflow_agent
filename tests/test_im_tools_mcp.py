@@ -30,6 +30,7 @@ from services.im_tools_mcp import (
     FIND_GROUP_INPUT_SCHEMA,
     build_app,
 )
+from services.im_tools_mcp.window import ANALYSIS_TIMEZONE
 from services.im_tools_mcp.config import Settings
 from services.im_tools_mcp.im_client import ImClient
 from services.im_tools_mcp.tools import (
@@ -387,12 +388,12 @@ async def test_fetch_cn_date_without_year_infers_recent_past():
             "conversation_id": 1, "start": "9月1日", "end": "9月15日",
         }, settings=SETTINGS)
     start = datetime.fromisoformat(result["window"]["start"])
-    now = datetime.now().astimezone()
+    now = datetime.now(ANALYSIS_TIMEZONE)
     expected = datetime(now.year, 9, 1)
     if expected > now.replace(tzinfo=None):
         expected = datetime(now.year - 1, 9, 1)
     # 窗口记号按服务器本地时区解析，断言须换回本地时区再比对年月日
-    local_start = start.astimezone()
+    local_start = start.astimezone(ANALYSIS_TIMEZONE)
     assert (local_start.year, local_start.month, local_start.day) == (
         expected.year, 9, 1
     )
