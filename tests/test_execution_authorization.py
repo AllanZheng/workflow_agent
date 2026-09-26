@@ -21,6 +21,7 @@ def test_authorizer_posts_execution_generation_and_model_version_with_scoped_ide
         "https://demo.test/internal/executions/f04b6209-30da-4e57-bf93-73c6867cc101/model-authorization",
         "execution-secret",
         "804b6209-30da-4e57-bf93-73c6867cc101",
+        credential_generation=7,
         transport=httpx.MockTransport(handler),
     )
     result = asyncio.run(authorizer.authorize(
@@ -36,7 +37,8 @@ def test_authorizer_posts_execution_generation_and_model_version_with_scoped_ide
     assert captured["headers"]["x-runtime-id"] == "804b6209-30da-4e57-bf93-73c6867cc101"
     assert captured["json"] == (
         '{"execution_id":"f04b6209-30da-4e57-bf93-73c6867cc101",'
-        '"model_version_id":"a04b6209-30da-4e57-bf93-73c6867cc101","generation":4}'
+        '"model_version_id":"a04b6209-30da-4e57-bf93-73c6867cc101","generation":4,'
+        '"credential_generation":7}'
     )
     assert "execution-secret" not in repr(authorizer)
 
@@ -61,6 +63,21 @@ def test_authorizer_fails_closed_without_reflecting_remote_error_body(response):
         ))
     assert "execution-secret" not in str(exc.value)
     assert "backend-secret" not in str(exc.value)
+
+
+def test_authorizer_rejects_a_response_for_a_rotated_model_credential():
+    authorizer = DemoModelAuthorizer(
+        "https://demo.test/internal/model-authorization", "execution-secret",
+        "804b6209-30da-4e57-bf93-73c6867cc101", credential_generation=6,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+            "authorized": True, "credential_generation": 7,
+        })),
+    )
+    with pytest.raises(AuthorizationError, match="model_credential_rotated"):
+        asyncio.run(authorizer.authorize(
+            execution_id="f04b6209-30da-4e57-bf93-73c6867cc101",
+            model_version_id="a04b6209-30da-4e57-bf93-73c6867cc101", generation=4,
+        ))
 
 
 def test_authorized_model_checks_before_each_bound_model_request():

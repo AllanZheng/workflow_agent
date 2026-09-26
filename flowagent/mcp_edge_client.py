@@ -36,13 +36,13 @@ async def _sdk_session(
 ) -> AsyncIterator[_Session]:
     """延迟导入 MCP SDK，让未启用执行服务的基础安装仍可加载包。"""
     try:
-        import httpx2
+        import httpx
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
     except ImportError as exc:  # pragma: no cover - 由部署依赖检查覆盖
         raise McpEdgeError("MCP client dependency is not installed") from exc
 
-    async with httpx2.AsyncClient(headers=dict(headers), timeout=timeout_seconds) as http_client:
+    async with httpx.AsyncClient(headers=dict(headers), timeout=timeout_seconds) as http_client:
         async with streamable_http_client(endpoint, http_client=http_client) as streams:
             read_stream, write_stream = streams
             async with ClientSession(read_stream, write_stream) as session:
@@ -64,6 +64,7 @@ class McpEdgeClient:
         execution_id: str | None = None,
         agent_id: str | None = None,
         revision_id: str | None = None,
+        runtime_id: str | None = None,
         generation: int | None = None,
     ) -> None:
         endpoint = endpoint.strip()
@@ -83,6 +84,7 @@ class McpEdgeClient:
         self._execution_id = execution_id
         self._agent_id = agent_id
         self._revision_id = revision_id
+        self._runtime_id = runtime_id
         self._generation = generation
         self._tool_bindings: dict[str, dict[str, Any]] = {}
         self._visible_tool_aliases: set[str] = set()
@@ -98,7 +100,7 @@ class McpEdgeClient:
             tool_ids = [tool["tool_id"] for tool in self._fixed_tools]
             if len(tool_ids) != len(set(tool_ids)):
                 raise ValueError("duplicate pinned MCP tool id")
-            for value in (execution_id, agent_id, revision_id):
+            for value in (execution_id, agent_id, revision_id, runtime_id):
                 if value is None:
                     raise ValueError("execution-scoped MCP requires UUID identity context")
                 try:
@@ -129,6 +131,7 @@ class McpEdgeClient:
                 "X-Execution-ID": self._execution_id,
                 "X-Agent-ID": str(self._agent_id),
                 "X-Agent-Revision-ID": str(self._revision_id),
+                "X-Runtime-ID": str(self._runtime_id),
                 "X-Binding-Generation": str(self._generation),
             })
         if extra_headers:
@@ -145,13 +148,13 @@ class McpEdgeClient:
             raise McpEdgeError("MCP tool discovery failed") from None
 
         if self._fixed_tools is not None:
-            visible_remote_names = {tool.name for tool in result.tools}
+            visible_names = {tool.name for tool in result.tools}
             tools = []
             self._visible_tool_aliases = set()
             for pinned in self._fixed_tools:
-                if pinned["remote_name"] not in visible_remote_names:
-                    continue
                 alias = self._tool_alias(pinned["tool_id"])
+                if alias not in visible_names:
+                    continue
                 self._visible_tool_aliases.add(alias)
                 tools.append({
                     "name": alias,

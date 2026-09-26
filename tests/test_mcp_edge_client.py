@@ -8,12 +8,13 @@ from flowagent.mcp_edge_client import McpEdgeClient, McpEdgeError
 
 
 class FakeSession:
-    def __init__(self):
+    def __init__(self, tool_name="search"):
         self.calls = []
+        self.tool_name = tool_name
 
     async def list_tools(self):
         tool = SimpleNamespace(
-            name="search",
+            name=self.tool_name,
             description=None,
             input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
         )
@@ -72,7 +73,7 @@ def test_calls_tool_and_prefers_structured_result():
 
 
 def test_v3_lists_only_frozen_tool_versions_and_sends_their_uuid_scope():
-    session = FakeSession()
+    session = FakeSession("tool_604b620930da4e57bf9373c6867cc101")
     captured = {}
     frozen = [{
         "tool_id": "604b6209-30da-4e57-bf93-73c6867cc101",
@@ -90,6 +91,7 @@ def test_v3_lists_only_frozen_tool_versions_and_sends_their_uuid_scope():
         execution_id="f04b6209-30da-4e57-bf93-73c6867cc101",
         agent_id="904b6209-30da-4e57-bf93-73c6867cc101",
         revision_id="a04b6209-30da-4e57-bf93-73c6867cc101",
+        runtime_id="b04b6209-30da-4e57-bf93-73c6867cc101",
         generation=4,
     )
 
@@ -110,13 +112,14 @@ def test_v3_lists_only_frozen_tool_versions_and_sends_their_uuid_scope():
     assert captured["headers"]["X-Agent-Tool-ID"] == frozen[0]["tool_id"]
     assert captured["headers"]["X-Agent-Tool-Version-ID"] == frozen[0]["tool_version_id"]
     assert captured["headers"]["X-Agent-Revision-ID"] == "a04b6209-30da-4e57-bf93-73c6867cc101"
+    assert captured["headers"]["X-Runtime-ID"] == "b04b6209-30da-4e57-bf93-73c6867cc101"
 
 
 def test_v3_rejects_tool_alias_outside_the_fixed_snapshot():
     client = McpEdgeClient(
         "http://demo.test/mcp/execution/f04b6209-30da-4e57-bf93-73c6867cc101/",
         "execution-token",
-        session_factory=make_factory(FakeSession(), {}),
+        session_factory=make_factory(FakeSession("tool_unknown"), {}),
         fixed_tools=[{
             "tool_id": "604b6209-30da-4e57-bf93-73c6867cc101",
             "tool_version_id": "704b6209-30da-4e57-bf93-73c6867cc101",
@@ -126,6 +129,7 @@ def test_v3_rejects_tool_alias_outside_the_fixed_snapshot():
         execution_id="f04b6209-30da-4e57-bf93-73c6867cc101",
         agent_id="904b6209-30da-4e57-bf93-73c6867cc101",
         revision_id="a04b6209-30da-4e57-bf93-73c6867cc101",
+        runtime_id="b04b6209-30da-4e57-bf93-73c6867cc101",
         generation=4,
     )
 
