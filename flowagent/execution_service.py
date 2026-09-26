@@ -309,14 +309,25 @@ def _request_llm(spec, config: ManagedAgentConfig):
     needs_model = any(node.type in {"llm", "agent"} for node in spec.nodes.values())
     if not needs_model:
         return MockLLM()
-    if not isinstance(model, dict) or config.model_api_key is None:
+    model_key = config.model_api_key.get_secret_value() if config.model_api_key else None
+    # Consultation credentials are held by the FlowAgent service. The platform
+    # sends only this non-secret credential reference in its V2 snapshot; it never
+    # transports the provider key in an execution request.
+    consultation_credential_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL, "risk-consultation:model",
+    ))
+    if (model_key is None and isinstance(model, dict)
+            and spec.workflow.name == "risk-consultation"
+            and model.get("credential_id") == consultation_credential_id):
+        model_key = os.environ.get("FLOWAGENT_RISK_CONSULTATION_MODEL_API_KEY")
+    if not isinstance(model, dict) or not model_key:
         raise ConfigError("managed_model_config_missing")
     from langchain_openai import ChatOpenAI
 
     parameters = dict(model.get("parameters") or {})
     return ChatOpenAI(
         model=model["name"], base_url=str(model["base_url"]),
-        api_key=config.model_api_key.get_secret_value(), **parameters,
+        api_key=model_key, **parameters,
     )
 
 
