@@ -192,6 +192,7 @@ class ManagedAgentConfig(StrictModel):
     config_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     snapshot: ManagedSnapshot
     model_api_key: SecretStr | None = Field(default=None, repr=False)
+    model_credential_generation: int | None = Field(default=None, ge=1)
     mcp_endpoint: str | None = None
     tool_access_token: SecretStr | None = Field(default=None, repr=False)
     model_authorization_url: str | None = None
@@ -230,7 +231,7 @@ class ManagedAgentConfig(StrictModel):
     def _validate_snapshot_contract(self):
         if isinstance(self.snapshot, ManagedSnapshotV3):
             self._snapshot_v3 = self.snapshot
-            if self.model_api_key is None:
+            if self.model_api_key is None or self.model_credential_generation is None:
                 raise ValueError("V3 model credential is required")
             if not self.model_authorization_url or self.execution_token is None:
                 raise ValueError("V3 model authorization configuration is required")
@@ -447,7 +448,7 @@ async def _execute_managed_v3(
         raise ValueError("managed_snapshot_v3_required")
     authorizer = model_authorizer or DemoModelAuthorizer(
         str(config.model_authorization_url), config.execution_token.get_secret_value(),
-        str(snapshot.runtime_id),
+        str(snapshot.runtime_id), credential_generation=config.model_credential_generation,
     )
     llm = AuthorizedChatModel(
         _request_llm(None, config), authorizer,
@@ -461,7 +462,8 @@ async def _execute_managed_v3(
             str(config.mcp_endpoint), config.execution_token.get_secret_value(),
             fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
             execution_id=request.execution_id, agent_id=str(snapshot.agent_id),
-            revision_id=str(snapshot.revision_id), generation=request.binding_generation,
+            revision_id=str(snapshot.revision_id), runtime_id=str(snapshot.runtime_id),
+            generation=request.binding_generation,
         )
     resolved_skill_loader = skill_loader
     if snapshot.skills and resolved_skill_loader is None:
@@ -573,7 +575,7 @@ async def stream_managed(
         snapshot = config.snapshot_v3
         authorizer = model_authorizer or DemoModelAuthorizer(
             str(config.model_authorization_url), config.execution_token.get_secret_value(),
-            str(snapshot.runtime_id),
+            str(snapshot.runtime_id), credential_generation=config.model_credential_generation,
         )
         llm = AuthorizedChatModel(
             _request_llm(None, config), authorizer,
@@ -587,7 +589,8 @@ async def stream_managed(
                 str(config.mcp_endpoint), config.execution_token.get_secret_value(),
                 fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
                 execution_id=request.execution_id, agent_id=str(snapshot.agent_id),
-                revision_id=str(snapshot.revision_id), generation=request.binding_generation,
+                revision_id=str(snapshot.revision_id), runtime_id=str(snapshot.runtime_id),
+                generation=request.binding_generation,
             )
         resolved_skill_loader = skill_loader
         if snapshot.skills and resolved_skill_loader is None:

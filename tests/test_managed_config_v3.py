@@ -89,6 +89,7 @@ def _envelope(snapshot=None):
             "config_digest": snapshot["config_digest"],
             "snapshot": snapshot,
             "model_api_key": "model-secret",
+            "model_credential_generation": 7,
             "model_authorization_url": "https://demo.test/internal/executions/f04b6209-30da-4e57-bf93-73c6867cc101/model-authorization",
             "execution_token": "execution-token-secret",
         },

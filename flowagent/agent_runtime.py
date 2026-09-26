@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 from dataclasses import dataclass, field
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -131,17 +132,23 @@ class ManagedAgentRuntime:
             if result.get("body_version_id") != skill["body_version_id"]:
                 raise ValueError("skill_body_version_mismatch")
             body = result.get("body_text")
+            returned_body_hash = result.get("body_hash")
         else:
             # Injected loaders may return the body directly; the production HTTP loader
             # validates IDs and content hash before returning it.
             body = result
         if not isinstance(body, str):
             raise ValueError("skill_body_invalid")
+        body_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if isinstance(result, dict) and returned_body_hash != body_hash:
+            raise ValueError("skill_body_hash_mismatch")
         self._loaded_skill_bodies[skill_id] = body
         self.usage.loaded_skills.append({
             "skill_id": skill_id,
             "metadata_version_id": skill["metadata_version_id"],
             "body_version_id": skill["body_version_id"],
+            "body_hash": body_hash,
+            "outcome": "success",
         })
         return body
 
@@ -167,6 +174,7 @@ class ManagedAgentRuntime:
             self.usage.called_tools.append({
                 "tool_id": str(descriptor["tool_id"]),
                 "tool_version_id": str(descriptor["tool_version_id"]),
+                "server_version_id": str(descriptor["server_version_id"]),
                 "outcome": "success",
             })
         return str(result)

@@ -212,6 +212,8 @@ def test_skill_body_is_loaded_only_on_model_request_and_uses_pinned_versions():
         "skill_id": SKILL["skill_id"],
         "metadata_version_id": SKILL["metadata_version_id"],
         "body_version_id": SKILL["body_version_id"],
+        "body_hash": BODY_HASH,
+        "outcome": "success",
     }]
 
 

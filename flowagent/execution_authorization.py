@@ -29,6 +29,7 @@ class DemoModelAuthorizer:
     """HTTP client for Demo's execution-scoped model-authorization contract."""
 
     def __init__(self, url: str, execution_token: str, runtime_id: str, *,
+                 credential_generation: int | None = None,
                  timeout_seconds: float = 3.0, transport: httpx.AsyncBaseTransport | None = None):
         if not url or not execution_token or not runtime_id:
             raise ValueError("model authorization configuration is incomplete")
@@ -37,6 +38,7 @@ class DemoModelAuthorizer:
         self._url = url
         self._execution_token = execution_token
         self._runtime_id = runtime_id
+        self._credential_generation = credential_generation
         self._timeout_seconds = timeout_seconds
         self._transport = transport
 
@@ -51,6 +53,8 @@ class DemoModelAuthorizer:
             "model_version_id": model_version_id,
             "generation": generation,
         }
+        if self._credential_generation is not None:
+            payload["credential_generation"] = self._credential_generation
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout_seconds, transport=self._transport,
@@ -78,6 +82,9 @@ class DemoModelAuthorizer:
         if (not isinstance(credential_generation, int) or isinstance(credential_generation, bool)
                 or credential_generation < 0):
             raise AuthorizationError("model_authorization_response_invalid")
+        if (self._credential_generation is not None
+                and credential_generation != self._credential_generation):
+            raise AuthorizationError("model_credential_rotated")
         if request_id is not None and not isinstance(request_id, str):
             raise AuthorizationError("model_authorization_response_invalid")
         return AuthorizationDecision(credential_generation, request_id)
