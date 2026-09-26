@@ -1,0 +1,96 @@
+import sys
+import types
+import uuid
+
+from flowagent.execution_service import ManagedAgentConfig, _request_llm
+from flowagent.managed_config import load_managed_spec
+
+
+def _snapshot(yaml_text):
+    from uuid import uuid5, NAMESPACE_URL
+    return {
+        "schema_version": 2,
+        "agent": {"id": str(uuid5(NAMESPACE_URL, "risk-consultation:test")),
+                  "type": "workflow", "name": "Risk consultation"},
+        "adapter": {"endpoint": "http://flowagent:8080"},
+        "model": {"provider": "openai_compatible", "name": "test-model",
+                  "base_url": "http://model:8000/v1",
+                  "credential_id": str(uuid5(NAMESPACE_URL, "risk-consultation:model")),
+                  "parameters": {"temperature": 0.2}},
+        "system_prompt": "",
+        "workflow": {"yaml": yaml_text, "max_tool_iterations": 1, "timeout_ms": 180000},
+        "mcp_tools": [], "skills": [],
+        "memory": {"profile_id": "disabled", "read_enabled": False, "write_enabled": False},
+        "runtime": {"history_limit": 0, "skill_load_mode": "on_demand",
+                    "visible_text_policy": "incremental"},
+    }
+
+
+def test_risk_consultation_managed_workflow_is_model_only_and_does_not_change_group_mode():
+    from pathlib import Path
+
+    raw = (Path(__file__).parents[1] / "configs" / "managed" / "risk_consultation.yaml").read_text(encoding="utf-8")
+    spec = load_managed_spec(raw)
+
+    assert spec.workflow.name == "risk-consultation"
+    assert spec.workflow.group_analysis_mode == "legacy"
+    assert {node.type for node in spec.nodes.values()} == {"llm"}
+    assert spec.nodes["generate"].output_key == "reply"
+
+
+def test_risk_consultation_provider_key_is_read_from_flowagent_environment(monkeypatch):
+    import yaml
+
+    raw = ("workflow:\n  name: risk-consultation\n  start: generate\nnodes:\n"
+           "  generate:\n    type: llm\n    system: safe\n    prompt: '{message}'\n"
+           "    output_key: reply\n    next: END\n")
+    snapshot = _snapshot(raw)
+    captured = {}
+
+    class Model:
+        pass
+
+    def build_model(**kwargs):
+        captured.update(kwargs)
+        return Model()
+
+    monkeypatch.setitem(sys.modules, "langchain_openai", types.SimpleNamespace(ChatOpenAI=build_model))
+    monkeypatch.setenv("FLOWAGENT_RISK_CONSULTATION_MODEL_API_KEY", "service-held-test-key")
+    digest = __import__("hashlib").sha256(
+        __import__("json").dumps(snapshot, ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":")).encode()
+    ).hexdigest()
+    config = ManagedAgentConfig.model_validate({
+        "agent_id": snapshot["agent"]["id"], "agent_type": "workflow",
+        "revision_id": str(uuid.uuid4()), "config_digest": digest, "snapshot": snapshot,
+    })
+
+    result = _request_llm(load_managed_spec(raw), config)
+
+    assert isinstance(result, Model)
+    assert captured["api_key"] == "service-held-test-key"
+    assert config.model_api_key is None
+
+
+def test_non_consultation_workflow_cannot_use_consultation_service_credential(monkeypatch):
+    from flowagent.errors import ConfigError
+
+    raw = "workflow:\n  name: unrelated\n  start: generate\nnodes:\n  generate:\n    type: llm\n    system: safe\n    prompt: '{message}'\n    output_key: reply\n    next: END\n"
+    snapshot = _snapshot(raw)
+    snapshot["workflow"]["yaml"] = raw
+    digest = __import__("hashlib").sha256(
+        __import__("json").dumps(snapshot, ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":")).encode()
+    ).hexdigest()
+    config = ManagedAgentConfig.model_validate({
+        "agent_id": snapshot["agent"]["id"], "agent_type": "workflow",
+        "revision_id": str(uuid.uuid4()), "config_digest": digest, "snapshot": snapshot,
+    })
+    monkeypatch.setenv("FLOWAGENT_RISK_CONSULTATION_MODEL_API_KEY", "service-held-test-key")
+
+    try:
+        _request_llm(load_managed_spec(raw), config)
+    except ConfigError as exc:
+        assert str(exc) == "managed_model_config_missing"
+    else:
+        raise AssertionError("unrelated workflow used the consultation-only credential")

@@ -1,0 +1,24 @@
+# Demo Platform generates stage-specific prompts and sends this configuration
+# through execution-v1. It contains no MCP tools or group-analysis mode.
+# Knowledge-query and business-process creation are platform adapter ports; both
+# stay disabled until their target systems and authorization contracts are ready.
+workflow:
+  name: risk-consultation
+  description: Risk consultation stage generator; publication remains platform-owned.
+  start: generate
+  inputs: [message]
+  recursion_limit: 8
+
+nodes:
+  generate:
+    type: llm
+    description: Generate one platform-selected consultation stage.
+    system: |
+      你是风险研判会商助手。依据输入材料给出可追溯、审慎的中文内容。
+      信息不足时明确标注，不得臆测、补造事实或执行任何外部操作。
+    prompt: "{message}"
+    parser: text
+    output_key: reply
+    retries: 1
+    timeout: 150
+    next: END

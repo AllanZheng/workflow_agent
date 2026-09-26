@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=flowagent:group-name-20260926
+FROM ${BASE_IMAGE}
+WORKDIR /app
+COPY flowagent/ ./flowagent/
+COPY services/ ./services/
+COPY configs/ ./configs/
+COPY run_execution.py ./run_execution.py
