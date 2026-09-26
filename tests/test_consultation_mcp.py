@@ -94,3 +94,27 @@ def test_consultation_write_mcp_requires_platform_worker_bearer():
         response = client.post("/mcp", json={"jsonrpc": "2.0", "method": "initialize", "id": 1})
     assert response.status_code == 401
     assert response.json() == {"error": {"code": "unauthorized"}}
+
+
+def test_consultation_file_message_forwards_attachment_and_rejects_invalid_ids():
+    import json
+    calls = []
+    async def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": {"id": 90}})
+    async def exercise():
+        app = build_app(_settings(), transport=httpx.MockTransport(handler))
+        async with _session(app) as session:
+            args = {"conversation_id": 101, "sender_id": 9001, "content": "初稿待审批",
+                    "client_message_id": "draft-file-1", "attachment_ids": [7]}
+            result = await session.call_tool("send_consultation_message", args)
+            assert not result.is_error
+            # 非正整数和重复编号不得到达 IM。
+            for invalid in ([True], [-1], [7, 7], "7"):
+                args["attachment_ids"] = invalid
+                rejected = await session.call_tool("send_consultation_message", args)
+                assert rejected.is_error
+    asyncio.run(exercise())
+    assert len(calls) == 1
+    assert calls[0]["message_type"] == "file"
+    assert calls[0]["attachment_ids"] == [7]

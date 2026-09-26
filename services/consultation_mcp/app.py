@@ -41,6 +41,7 @@ def build_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None 
                     "sender_id": {"type": "integer", "minimum": 1},
                     "content": {"type": "string", "minLength": 1, "maxLength": 100000},
                     "client_message_id": {"type": "string", "pattern": "^[A-Za-z0-9:_-]{1,64}$"},
+                    "attachment_ids": {"type": "array", "items": {"type": "integer", "minimum": 1}, "maxItems": 20, "uniqueItems": True},
                 },
                 "required": ["conversation_id", "sender_id", "content", "client_message_id"],
                 "additionalProperties": False,
@@ -51,6 +52,12 @@ def build_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None 
         args = params.arguments if isinstance(params.arguments, dict) else {}
         conversation_id, sender_id = args.get("conversation_id"), args.get("sender_id")
         content, client_message_id = args.get("content"), args.get("client_message_id")
+        attachment_ids = args.get("attachment_ids", [])
+        # 仅转发已上传附件编号，附件所有权和群访问权限继续由 IM 验证。
+        if (not isinstance(attachment_ids, list) or len(attachment_ids) > 20
+                or any(type(item) is not int or item <= 0 for item in attachment_ids)
+                or len(set(attachment_ids)) != len(attachment_ids)):
+            return _tool_error("invalid_arguments")
         if (type(conversation_id) is not int or type(sender_id) is not int
                 or not isinstance(content, str) or not content.strip()
                 or len(content) > 100000 or not isinstance(client_message_id, str)
@@ -62,9 +69,11 @@ def build_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None 
             return _tool_error("sender_not_allowed")
         payload = {
             "sender_id": sender_id, "content": content,
-            "message_type": "text", "metadata": {},
+            "message_type": "file" if attachment_ids else "text", "metadata": {},
             "client_message_id": client_message_id,
         }
+        if attachment_ids:
+            payload["attachment_ids"] = attachment_ids
         try:
             async with httpx.AsyncClient(
                 base_url=settings.im_base_url,
