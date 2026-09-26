@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage
 
 import flowagent.execution_service as execution_service
 from flowagent.execution_service import build_execution_app
+from tests.test_managed_config_v3 import _digest, _envelope as _v3_envelope
 
 
 def _envelope():
@@ -122,3 +123,184 @@ nodes:
         "token": "workflow-mcp-token",
         "tools": [],
     }
+
+
+def _v3_skill_envelope():
+    payload = _v3_envelope()
+    snapshot = payload["agent_config"]["snapshot"]
+    skill = {
+        "skill_id": "604b6209-30da-4e57-bf93-73c6867cc101",
+        "metadata_version_id": "704b6209-30da-4e57-bf93-73c6867cc101",
+        "body_version_id": "804b6209-30da-4e57-bf93-73c6867cc101",
+        "name": "Refund policy", "summary": "Published refund rules.",
+    }
+    snapshot["skills"] = [skill]
+    snapshot["config"]["skills"] = [{key: skill[key] for key in (
+        "skill_id", "metadata_version_id", "body_version_id",
+    )}]
+    snapshot["config_digest"] = _digest(snapshot)
+    payload["agent_config"]["config_digest"] = snapshot["config_digest"]
+    return payload
+
+
+def test_v3_model_authorization_is_checked_before_every_model_call_and_receipt_is_versioned(monkeypatch):
+    from langchain_core.messages import AIMessage
+
+    model_calls = []
+    auth_calls = []
+    body = "Refunds are allowed for 30 days."
+
+    class Authorizer:
+        async def authorize(self, *, execution_id, model_version_id, generation):
+            auth_calls.append((execution_id, model_version_id, generation))
+            return object()
+
+    class BoundLlm:
+        async def ainvoke(self, messages):
+            model_calls.append(messages)
+            if len(model_calls) == 1:
+                return AIMessage(content="", tool_calls=[{
+                    "id": "load", "name": "load_skill",
+                    "args": {"skill_id": "604b6209-30da-4e57-bf93-73c6867cc101"},
+                }])
+            return AIMessage(content="Refunds are allowed for 30 days.")
+
+    class Llm:
+        def bind_tools(self, tools):
+            return BoundLlm()
+
+    async def load_skill(*, execution_id, generation, skill):
+        assert generation == 4
+        assert skill["body_version_id"] == "804b6209-30da-4e57-bf93-73c6867cc101"
+        return body
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: Llm())
+    response = TestClient(build_execution_app(
+        "internal", model_authorizer=Authorizer(), skill_loader=load_skill,
+    )).post("/execution-v1/respond", json=_v3_skill_envelope(),
+            headers={"Authorization": "Bearer internal"})
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Refunds are allowed for 30 days."
+    assert len(model_calls) == 2
+    assert auth_calls == [
+        ("f04b6209-30da-4e57-bf93-73c6867cc101", "a04b6209-30da-4e57-bf93-73c6867cc101", 4),
+        ("f04b6209-30da-4e57-bf93-73c6867cc101", "a04b6209-30da-4e57-bf93-73c6867cc101", 4),
+    ]
+    receipt = response.json()["metadata"]["agent_config_applied"]
+    assert receipt["execution_id"] == "f04b6209-30da-4e57-bf93-73c6867cc101"
+    assert receipt["runtime_id"] == "804b6209-30da-4e57-bf93-73c6867cc101"
+    assert receipt["schema_version"] == 3
+    assert receipt["loaded_skill_versions"] == [{
+        "skill_id": "604b6209-30da-4e57-bf93-73c6867cc101",
+        "metadata_version_id": "704b6209-30da-4e57-bf93-73c6867cc101",
+        "body_version_id": "804b6209-30da-4e57-bf93-73c6867cc101",
+    }]
+    assert body not in json.dumps(receipt)
+    assert "model-secret" not in json.dumps(receipt)
+    assert "execution-token-secret" not in json.dumps(receipt)
+
+
+def test_v3_model_authorization_denial_prevents_any_model_request(monkeypatch):
+    from flowagent.execution_authorization import AuthorizationError
+
+    model_calls = []
+    auth_calls = []
+
+    class DenyingAuthorizer:
+        async def authorize(self, **kwargs):
+            auth_calls.append(kwargs)
+            raise AuthorizationError("model_authorization_denied")
+
+    class Llm:
+        async def ainvoke(self, messages):
+            model_calls.append(messages)
+            raise AssertionError("model request must not be sent")
+
+        def bind_tools(self, tools):
+            return self
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: Llm())
+    response = TestClient(build_execution_app(
+        "internal", model_authorizer=DenyingAuthorizer(),
+    )).post("/execution-v1/respond", json=_v3_envelope(),
+            headers={"Authorization": "Bearer internal"})
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "model_authorization_denied"
+    assert len(auth_calls) == 1
+    assert model_calls == []
+
+
+def test_v3_injects_only_platform_memory_context_when_snapshot_enables_read(monkeypatch):
+    from langchain_core.messages import AIMessage
+
+    payload = _v3_envelope()
+    snapshot = payload["agent_config"]["snapshot"]
+    snapshot["memory"]["read"] = True
+    snapshot["config"]["memory_read"] = True
+    snapshot["config_digest"] = _digest(snapshot)
+    payload["agent_config"]["config_digest"] = snapshot["config_digest"]
+    payload["memory_context"] = {
+        "schema_version": 1, "status": "ok",
+        "rendered_text": "User prefers short answers.",
+        "included_ids": ["memory-1"],
+        "items": [{"id": "memory-1", "content": "User prefers short answers."}],
+    }
+    captured = {}
+
+    class Llm:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return AIMessage(content="brief answer")
+
+        def bind_tools(self, tools):
+            return self
+
+    class Authorizer:
+        async def authorize(self, **kwargs):
+            return object()
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: Llm())
+    response = TestClient(build_execution_app("internal", model_authorizer=Authorizer())).post(
+        "/execution-v1/respond", json=payload,
+        headers={"Authorization": "Bearer internal"},
+    )
+
+    assert response.status_code == 200
+    assert "User prefers short answers." in captured["messages"][0].content
+    assert response.json()["used_context_refs"] == ["memory-1"]
+    receipt = response.json()["metadata"]["agent_config_applied"]
+    assert receipt["memory_profile_version_id"] == "d04b6209-30da-4e57-bf93-73c6867cc101"
+    assert receipt["memory_context_status"] == "ok"
+    assert "User prefers short answers." not in json.dumps(receipt)
+
+
+def test_v3_rejects_memory_context_when_frozen_policy_disables_read(monkeypatch):
+    payload = _v3_envelope()
+    payload["memory_context"] = {
+        "schema_version": 1, "status": "ok", "rendered_text": "untrusted context",
+        "included_ids": [], "items": [],
+    }
+    model_calls = []
+
+    class Llm:
+        async def ainvoke(self, messages):
+            model_calls.append(messages)
+            return AIMessage(content="should not run")
+
+        def bind_tools(self, tools):
+            return self
+
+    class Authorizer:
+        async def authorize(self, **kwargs):
+            return object()
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: Llm())
+    response = TestClient(build_execution_app("internal", model_authorizer=Authorizer())).post(
+        "/execution-v1/respond", json=payload,
+        headers={"Authorization": "Bearer internal"},
+    )
+
+    assert response.status_code == 422
+    assert model_calls == []

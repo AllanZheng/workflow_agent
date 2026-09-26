@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
+import uuid
 
 
 class McpEdgeError(RuntimeError):
@@ -59,6 +60,11 @@ class McpEdgeClient:
         *,
         timeout_seconds: float = 15,
         session_factory: SessionFactory | None = None,
+        fixed_tools: list[Mapping[str, Any]] | None = None,
+        execution_id: str | None = None,
+        agent_id: str | None = None,
+        revision_id: str | None = None,
+        generation: int | None = None,
     ) -> None:
         endpoint = endpoint.strip()
         workload_token = workload_token.strip()
@@ -73,12 +79,60 @@ class McpEdgeClient:
         self._workload_token = workload_token
         self._timeout_seconds = timeout_seconds
         self._session_factory = session_factory or _sdk_session
+        self._fixed_tools = None if fixed_tools is None else [dict(tool) for tool in fixed_tools]
+        self._execution_id = execution_id
+        self._agent_id = agent_id
+        self._revision_id = revision_id
+        self._generation = generation
+        self._tool_bindings: dict[str, dict[str, Any]] = {}
+        self._visible_tool_aliases: set[str] = set()
+        if self._fixed_tools is not None:
+            for tool in self._fixed_tools:
+                for reference in ("tool_id", "tool_version_id", "server_version_id"):
+                    try:
+                        tool[reference] = str(uuid.UUID(str(tool[reference])))
+                    except (KeyError, ValueError, TypeError) as exc:
+                        raise ValueError(f"invalid pinned MCP {reference}") from exc
+                if not isinstance(tool.get("remote_name"), str) or not tool["remote_name"]:
+                    raise ValueError("invalid pinned MCP remote_name")
+            tool_ids = [tool["tool_id"] for tool in self._fixed_tools]
+            if len(tool_ids) != len(set(tool_ids)):
+                raise ValueError("duplicate pinned MCP tool id")
+            for value in (execution_id, agent_id, revision_id):
+                if value is None:
+                    raise ValueError("execution-scoped MCP requires UUID identity context")
+                try:
+                    uuid.UUID(str(value))
+                except (ValueError, TypeError) as exc:
+                    raise ValueError("execution-scoped MCP identity must be UUID") from exc
+            if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
+                raise ValueError("execution-scoped MCP requires a non-negative generation")
+            self._tool_bindings = {
+                self._tool_alias(tool["tool_id"]): tool for tool in self._fixed_tools
+            }
 
     def __repr__(self) -> str:
         return f"McpEdgeClient(endpoint={self._endpoint!r}, timeout_seconds={self._timeout_seconds!r})"
 
-    def _session(self) -> Any:
+    @property
+    def tool_bindings(self) -> dict[str, dict[str, Any]]:
+        return dict(self._tool_bindings)
+
+    @staticmethod
+    def _tool_alias(tool_id: str) -> str:
+        return "tool_" + uuid.UUID(str(tool_id)).hex
+
+    def _session(self, extra_headers: Mapping[str, str] | None = None) -> Any:
         headers = {"Authorization": f"Bearer {self._workload_token}"}
+        if self._execution_id is not None:
+            headers.update({
+                "X-Execution-ID": self._execution_id,
+                "X-Agent-ID": str(self._agent_id),
+                "X-Agent-Revision-ID": str(self._revision_id),
+                "X-Binding-Generation": str(self._generation),
+            })
+        if extra_headers:
+            headers.update(extra_headers)
         return self._session_factory(self._endpoint, headers, self._timeout_seconds)
 
     async def list_tools(self) -> list[dict[str, Any]]:
@@ -87,8 +141,28 @@ class McpEdgeClient:
                 result = await session.list_tools()
         except McpEdgeError:
             raise
-        except Exception as exc:
-            raise McpEdgeError("MCP tool discovery failed") from exc
+        except Exception:
+            raise McpEdgeError("MCP tool discovery failed") from None
+
+        if self._fixed_tools is not None:
+            visible_remote_names = {tool.name for tool in result.tools}
+            tools = []
+            self._visible_tool_aliases = set()
+            for pinned in self._fixed_tools:
+                if pinned["remote_name"] not in visible_remote_names:
+                    continue
+                alias = self._tool_alias(pinned["tool_id"])
+                self._visible_tool_aliases.add(alias)
+                tools.append({
+                    "name": alias,
+                    "description": pinned.get("description") or "",
+                    "input_schema": pinned.get("input_schema") or {"type": "object"},
+                    "tool_id": pinned["tool_id"],
+                    "tool_version_id": pinned["tool_version_id"],
+                    "server_version_id": pinned["server_version_id"],
+                    "remote_name": pinned["remote_name"],
+                })
+            return tools
 
         tools = []
         for tool in result.tools:
@@ -103,16 +177,29 @@ class McpEdgeClient:
         return tools
 
     async def call_tool(self, name: str, arguments: Mapping[str, Any] | None = None) -> Any:
+        remote_name = name
+        call_headers = None
+        if self._fixed_tools is not None:
+            pinned = self._tool_bindings.get(name)
+            if pinned is None or name not in self._visible_tool_aliases:
+                raise McpEdgeError("MCP tool is not pinned or currently authorized")
+            remote_name = str(pinned["remote_name"])
+            call_headers = {
+                "X-Agent-Tool-ID": str(pinned["tool_id"]),
+                "X-Agent-Tool-Version-ID": str(pinned["tool_version_id"]),
+            }
         try:
-            async with self._session() as session:
+            async with self._session(call_headers) as session:
+                # The edge receives the stable alias advertised in list_tools and
+                # resolves the pinned remote name after checking the UUID headers.
                 result = await session.call_tool(name, dict(arguments or {}))
         except McpEdgeError:
             raise
-        except Exception as exc:
-            raise McpEdgeError(f"MCP tool call failed: {name}") from exc
+        except Exception:
+            raise McpEdgeError(f"MCP tool call failed: {remote_name}") from None
 
         if result.is_error:
-            raise McpEdgeError(f"MCP tool returned an error: {name}")
+            raise McpEdgeError(f"MCP tool returned an error: {remote_name}")
         if result.structured_content is not None:
             return result.structured_content
         return self._normalize_content(result.content)
