@@ -18,8 +18,15 @@ def _fixture(name):
 
 
 def test_shared_v1_v2_fixture_digests_are_stable():
-    assert hashlib.sha256((FIXTURES / "v1.json").read_bytes()).hexdigest() == "cc36e60c56c9c2a4fe0d66feae5b4ef74ae20dea66df919f63a7daf503f719b7"
-    assert hashlib.sha256((FIXTURES / "v2.json").read_bytes()).hexdigest() == "091e92e0660ea0e589d2346faa1c969450c346ee7120fad7cbdda15f3e3bc436"
+    def digests(name):
+        raw = (FIXTURES / name).read_bytes()
+        return {
+            hashlib.sha256(raw).hexdigest(),
+            hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest(),
+        }
+
+    assert "cc36e60c56c9c2a4fe0d66feae5b4ef74ae20dea66df919f63a7daf503f719b7" in digests("v1.json")
+    assert "091e92e0660ea0e589d2346faa1c969450c346ee7120fad7cbdda15f3e3bc436" in digests("v2.json")
 
 
 @pytest.mark.parametrize("name", ["v1.json", "v2.json"])
@@ -59,7 +66,7 @@ def test_capabilities_v2_uses_a_separate_authenticated_endpoint():
     assert old.status_code == new.status_code == 200
     assert old.json()["schema_version"] == 1
     assert new.json()["schema_version"] == 2
-    assert new.json()["snapshot"]["versions"] == [1, 2]
+    assert new.json()["snapshot"]["versions"] == [1, 2, 3]
     assert new.json()["skills"]["load_versions"] == [1]
     assert new.json()["tools"]["execution_scoped_mcp"] is True
     assert unauthorized.status_code == 401

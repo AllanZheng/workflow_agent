@@ -9,11 +9,11 @@ import hmac
 import json
 import os
 import uuid
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Callable, Literal
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, field_validator, model_validator
 
 from .engine import build_graph, open_postgres_checkpointer
 from .errors import ConfigError
@@ -22,6 +22,12 @@ from .managed_config import load_managed_spec
 from .agent_runtime import ManagedAgentRuntime
 from .mcp_edge_client import McpEdgeClient
 from .group_analysis import analyze_group
+from .execution_authorization import (
+    AuthorizationError, AuthorizedChatModel, DemoModelAuthorizer, ModelAuthorizer,
+)
+from .managed_config_v3 import ManagedSnapshotV3, parse_managed_snapshot_v3
+from .framework_capabilities import FrameworkCapabilitiesV2
+from .skill_runtime import DemoSkillBodyLoader
 
 
 class StrictModel(BaseModel):
@@ -159,7 +165,7 @@ class ManagedSnapshotV2(StrictModel):
 
 
 ManagedSnapshot = Annotated[
-    ManagedSnapshotV1 | ManagedSnapshotV2,
+    ManagedSnapshotV1 | ManagedSnapshotV2 | ManagedSnapshotV3,
     Field(discriminator="schema_version"),
 ]
 
@@ -179,21 +185,6 @@ class MemoryContextV1(StrictModel):
     items: list[MemoryContextItem] = Field(default_factory=list)
 
 
-class FrameworkCapabilitiesV2(StrictModel):
-    schema_version: Literal[2] = 2
-    framework_id: Literal["workflow"] = "workflow"
-    adapter_version: str
-    runtime_mode: Literal["workflow_managed"] = "workflow_managed"
-    snapshot: dict[str, list[int]]
-    basic: dict[str, bool]
-    context: dict[str, Any]
-    control: dict[str, Any]
-    tools: dict[str, bool]
-    skills: dict[str, Any]
-    applied_config_fields: list[str]
-    editable_fields: list[str] = Field(default_factory=list)
-
-
 class ManagedAgentConfig(StrictModel):
     agent_id: uuid.UUID
     agent_type: Literal["workflow"]
@@ -203,10 +194,59 @@ class ManagedAgentConfig(StrictModel):
     model_api_key: SecretStr | None = Field(default=None, repr=False)
     mcp_endpoint: str | None = None
     tool_access_token: SecretStr | None = Field(default=None, repr=False)
+    model_authorization_url: str | None = None
+    execution_token: SecretStr | None = Field(default=None, repr=False)
+    _snapshot_v3: ManagedSnapshotV3 | None = PrivateAttr(default=None)
+
+    @field_validator("snapshot", mode="before")
+    @classmethod
+    def _validate_raw_v3_snapshot(cls, value, info):
+        if isinstance(value, dict) and value.get("schema_version") == 3:
+            try:
+                parse_managed_snapshot_v3(
+                    value, agent_id=info.data["agent_id"],
+                    revision_id=info.data["revision_id"],
+                    config_digest=info.data["config_digest"],
+                )
+            except (KeyError, ValueError, TypeError) as exc:
+                raise ValueError(str(exc)) from exc
+        return value
+
+    @field_validator("model_authorization_url")
+    @classmethod
+    def _validate_authorization_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment):
+            raise ValueError("model authorization URL is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_snapshot_contract(self):
+        if isinstance(self.snapshot, ManagedSnapshotV3):
+            self._snapshot_v3 = self.snapshot
+            if self.model_api_key is None:
+                raise ValueError("V3 model credential is required")
+            if not self.model_authorization_url or self.execution_token is None:
+                raise ValueError("V3 model authorization configuration is required")
+            if self._snapshot_v3.tools and (
+                not self.mcp_endpoint or self.tool_access_token is None
+            ):
+                raise ValueError("V3 execution-scoped MCP configuration is required")
+        return self
 
     @property
     def snapshot_data(self) -> dict[str, Any]:
         return self.snapshot.model_dump(mode="json", exclude_unset=True)
+
+    @property
+    def snapshot_v3(self) -> ManagedSnapshotV3 | None:
+        return self._snapshot_v3
 
 
 class GroupAnalysisTarget(StrictModel):
@@ -219,20 +259,32 @@ class ExecutionRequest(StrictModel):
     idempotency_key: str | None = None
     deadline_ms: int | None = None
     trace: Trace
-    binding_generation: int
+    binding_generation: int = Field(ge=0, strict=True)
     continuity_key: str
     message: str
     analysis_target: "GroupAnalysisTarget | None" = None
     identity: dict[str, Any]
     scene: dict[str, Any]
     request_metadata: dict[str, Any] = Field(default_factory=dict)
+    memory_context: MemoryContextV1 | None = None
     model: str | None = None
     model_revision: int | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
     runtime_injection: None = None
     unified_runtime_injection: None = None
-    memory_context: MemoryContextV1 | None = None
     agent_config: ManagedAgentConfig
+
+    @model_validator(mode="after")
+    def _validate_v3_execution_scope(self):
+        if self.agent_config.snapshot_v3 is not None:
+            try:
+                execution_id = uuid.UUID(self.execution_id)
+                trace_id = uuid.UUID(self.trace.trace_id)
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise ValueError("V3 execution identifiers must be UUIDs") from exc
+            if execution_id != trace_id:
+                raise ValueError("V3 trace and execution identifiers must match")
+        return self
 
 
 def _digest(snapshot: dict[str, Any]) -> str:
@@ -242,6 +294,17 @@ def _digest(snapshot: dict[str, Any]) -> str:
 
 
 def _request_llm(spec, config: ManagedAgentConfig):
+    if config.snapshot_v3 is not None:
+        model = config.snapshot_v3.model
+        if config.model_api_key is None:
+            raise ConfigError("managed_model_config_missing")
+        from langchain_openai import ChatOpenAI
+
+        parameters = model.parameters.model_dump(exclude_none=True)
+        return ChatOpenAI(
+            model=model.model_name, base_url=model.base_url,
+            api_key=config.model_api_key.get_secret_value(), **parameters,
+        )
     model = config.snapshot_data.get("model")
     needs_model = any(node.type in {"llm", "agent"} for node in spec.nodes.values())
     if not needs_model:
@@ -299,8 +362,14 @@ async def execute_managed(
     request: ExecutionRequest,
     mcp_workload_token: str = "",
     checkpointer=None,
+    *, model_authorizer: ModelAuthorizer | None = None,
+    skill_loader: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     config = request.agent_config
+    if config.snapshot_v3 is not None:
+        return await _execute_managed_v3(
+            request, model_authorizer=model_authorizer, skill_loader=skill_loader,
+        )
     snapshot = config.snapshot_data
     if _digest(snapshot) != config.config_digest:
         raise ValueError("config_digest_mismatch")
@@ -368,7 +437,89 @@ async def execute_managed(
     }
 
 
-def _receipt(config: ManagedAgentConfig, loaded_skills: list[dict] | None = None) -> dict[str, Any]:
+async def _execute_managed_v3(
+    request: ExecutionRequest, *, model_authorizer: ModelAuthorizer | None,
+    skill_loader: Callable[..., Any] | None,
+) -> dict[str, Any]:
+    config = request.agent_config
+    snapshot = config.snapshot_v3
+    if snapshot is None:  # Internal guard for direct callers.
+        raise ValueError("managed_snapshot_v3_required")
+    authorizer = model_authorizer or DemoModelAuthorizer(
+        str(config.model_authorization_url), config.execution_token.get_secret_value(),
+        str(snapshot.runtime_id),
+    )
+    llm = AuthorizedChatModel(
+        _request_llm(None, config), authorizer,
+        execution_id=request.execution_id,
+        model_version_id=str(snapshot.model.version_id),
+        generation=request.binding_generation,
+    )
+    mcp_client = None
+    if snapshot.tools:
+        mcp_client = McpEdgeClient(
+            str(config.mcp_endpoint), config.execution_token.get_secret_value(),
+            fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
+            execution_id=request.execution_id, agent_id=str(snapshot.agent_id),
+            revision_id=str(snapshot.revision_id), generation=request.binding_generation,
+        )
+    resolved_skill_loader = skill_loader
+    if snapshot.skills and resolved_skill_loader is None:
+        resolved_skill_loader = DemoSkillBodyLoader(
+            str(config.model_authorization_url), config.execution_token.get_secret_value(),
+            str(snapshot.runtime_id),
+        )
+    runtime = ManagedAgentRuntime(
+        llm, mcp_client, skills=[skill.model_dump(mode="json") for skill in snapshot.skills],
+        skill_loader=resolved_skill_loader, execution_id=request.execution_id,
+        generation=request.binding_generation,
+    )
+    system_prompt = snapshot.system_prompt
+    if request.memory_context is not None:
+        if not snapshot.memory.read:
+            raise ValueError("memory_context_not_enabled_in_snapshot")
+        rendered_memory = request.memory_context.rendered_text.strip()
+        if rendered_memory:
+            system_prompt = (
+                f"{system_prompt}\n\nRelevant user memory context:\n{rendered_memory}"
+                if system_prompt else f"Relevant user memory context:\n{rendered_memory}"
+            )
+    reply = await runtime.run(
+        request.message, system_prompt, max_tool_iterations=8,
+        history=request.history,
+    )
+    return {
+        "execution_id": request.execution_id,
+        "reply": reply,
+        "used_context_refs": (
+            list(request.memory_context.included_ids) if request.memory_context is not None else []
+        ),
+        "metadata": {"agent_config_applied": _receipt(
+            config, execution_id=request.execution_id, usage=runtime.usage,
+            memory_context_status=(request.memory_context.status if request.memory_context else "unavailable"),
+        )},
+    }
+
+
+def _receipt(config: ManagedAgentConfig, loaded_skills: list[dict] | None = None, *,
+             execution_id: str | None = None, usage=None,
+             memory_context_status: str = "unavailable") -> dict[str, Any]:
+    if config.snapshot_v3 is not None:
+        snapshot = config.snapshot_v3
+        return {
+            "execution_id": execution_id,
+            "runtime_id": str(snapshot.runtime_id),
+            "schema_version": 3,
+            "revision_id": str(snapshot.revision_id),
+            "config_digest": snapshot.config_digest,
+            "model_version_id": str(snapshot.model.version_id),
+            "memory_profile_version_id": str(snapshot.memory.profile_version_id),
+            "memory_context_status": memory_context_status,
+            "loaded_skill_versions": list(getattr(usage, "loaded_skills", []) or []),
+            "skill_load_failures": list(getattr(usage, "skill_load_failures", []) or []),
+            "called_tool_versions": list(getattr(usage, "called_tools", []) or []),
+            "applied_fields": ["system_prompt", "model", "tools", "skills", "memory"],
+        }
     snapshot = config.snapshot_data
     details = {
         "snapshot_version": snapshot["schema_version"],
@@ -410,12 +561,72 @@ async def stream_managed(
     request: ExecutionRequest,
     mcp_workload_token: str = "",
     checkpointer=None,
+    *, model_authorizer: ModelAuthorizer | None = None,
+    skill_loader: Callable[..., Any] | None = None,
 ):
     """执行受管图，并把终态 reply 节点的真实模型增量转为事件。"""
     seq = 0
     yield {"seq": seq, "kind": "meta", "trace_id": request.execution_id, "framework": "workflow"}
     seq += 1
     config = request.agent_config
+    if config.snapshot_v3 is not None:
+        snapshot = config.snapshot_v3
+        authorizer = model_authorizer or DemoModelAuthorizer(
+            str(config.model_authorization_url), config.execution_token.get_secret_value(),
+            str(snapshot.runtime_id),
+        )
+        llm = AuthorizedChatModel(
+            _request_llm(None, config), authorizer,
+            execution_id=request.execution_id,
+            model_version_id=str(snapshot.model.version_id),
+            generation=request.binding_generation,
+        )
+        mcp_client = None
+        if snapshot.tools:
+            mcp_client = McpEdgeClient(
+                str(config.mcp_endpoint), config.execution_token.get_secret_value(),
+                fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
+                execution_id=request.execution_id, agent_id=str(snapshot.agent_id),
+                revision_id=str(snapshot.revision_id), generation=request.binding_generation,
+            )
+        resolved_skill_loader = skill_loader
+        if snapshot.skills and resolved_skill_loader is None:
+            resolved_skill_loader = DemoSkillBodyLoader(
+                str(config.model_authorization_url), config.execution_token.get_secret_value(),
+                str(snapshot.runtime_id),
+            )
+        runtime = ManagedAgentRuntime(
+            llm, mcp_client, skills=[skill.model_dump(mode="json") for skill in snapshot.skills],
+            skill_loader=resolved_skill_loader, execution_id=request.execution_id,
+            generation=request.binding_generation,
+        )
+        reply = ""
+        system_prompt = snapshot.system_prompt
+        if request.memory_context is not None:
+            if not snapshot.memory.read:
+                raise ValueError("memory_context_not_enabled_in_snapshot")
+            rendered_memory = request.memory_context.rendered_text.strip()
+            if rendered_memory:
+                system_prompt = (
+                    f"{system_prompt}\n\nRelevant user memory context:\n{rendered_memory}"
+                    if system_prompt else f"Relevant user memory context:\n{rendered_memory}"
+                )
+        async for content in runtime.stream(
+            request.message, system_prompt, max_tool_iterations=8,
+            history=request.history,
+        ):
+            reply += content
+            yield {"seq": seq, "kind": "delta", "trace_id": request.execution_id, "content": content}
+            seq += 1
+        yield {
+            "seq": seq, "kind": "done", "trace_id": request.execution_id,
+            "content": reply, "framework": "workflow",
+            "metadata": {"agent_config_applied": _receipt(
+                config, execution_id=request.execution_id, usage=runtime.usage,
+                memory_context_status=(request.memory_context.status if request.memory_context else "unavailable"),
+            )},
+        }
+        return
     snapshot = config.snapshot_data
     if _digest(snapshot) != config.config_digest:
         raise ValueError("config_digest_mismatch")
@@ -496,7 +707,11 @@ async def stream_managed(
     }
 
 
-def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> FastAPI:
+def build_execution_app(
+    internal_token: str, mcp_workload_token: str = "", *,
+    model_authorizer: ModelAuthorizer | None = None,
+    skill_loader: Callable[..., Any] | None = None,
+) -> FastAPI:
     if not internal_token:
         raise ValueError("FRAMEWORK_INTERNAL_TOKEN is required")
     checkpoint_mode = (os.getenv("FLOWAGENT_CHECKPOINT") or "postgres").strip().lower()
@@ -546,16 +761,20 @@ def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> Fa
             return JSONResponse(status_code=401, content={"error": {"code": "unauthorized"}})
         capabilities = FrameworkCapabilitiesV2(
             adapter_version=os.environ.get("AGENT_PLATFORM_BUILD_ID") or "unknown",
-            snapshot={"versions": [1, 2]},
+            snapshot={"versions": [1, 2, 3]},
             basic={"respond": True, "stream": True, "config_receipt": True},
             context={"history_import": "messages", "memory_context_versions": [1]},
             control={
                 "versions": [], "hitl_modes": [], "steering_modes": [],
                 "cancel": "unsupported", "reset": "unsupported",
             },
-            tools={"managed_mcp": bool(mcp_workload_token), "execution_scoped_mcp": bool(mcp_workload_token)},
+            tools={"managed_mcp": bool(mcp_workload_token), "execution_scoped_mcp": True},
             skills={"catalog_versions": [1], "load_versions": [1], "session_pinning": True},
-            applied_config_fields=["workflow.yaml", "system_prompt", "skills"],
+            applied_config_fields=[
+                "workflow.yaml", "system_prompt", "skills", "schema_version",
+                "agent_id", "revision_id", "runtime_id", "config_digest",
+                "model", "tools", "memory",
+            ],
             editable_fields=[
                 "adapter.endpoint", "adapter.timeout_ms", "model", "system_prompt",
                 "workflow", "mcp_tools", "skills", "memory", "runtime.history_limit",
@@ -581,7 +800,11 @@ def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> Fa
             return await execute_managed(
                 payload, mcp_workload_token,
                 checkpointer=getattr(request.app.state, "checkpointer", None),
+                model_authorizer=model_authorizer, skill_loader=skill_loader,
             )
+        except AuthorizationError as exc:
+            status = 403 if "denied" in str(exc) else 503
+            return JSONResponse(status_code=status, content={"error": {"code": str(exc)}})
         except ValueError as exc:
             code = str(exc)
             status = 409 if code in {"config_digest_mismatch", "config_identity_mismatch"} else 422
@@ -606,6 +829,7 @@ def build_execution_app(internal_token: str, mcp_workload_token: str = "") -> Fa
                 async for event in stream_managed(
                     payload, mcp_workload_token,
                     checkpointer=getattr(request.app.state, "checkpointer", None),
+                    model_authorizer=model_authorizer, skill_loader=skill_loader,
                 ):
                     emitted = event["seq"] + 1
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"

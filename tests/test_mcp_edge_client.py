@@ -71,6 +71,68 @@ def test_calls_tool_and_prefers_structured_result():
     assert session.calls == [("search", {"q": "x"})]
 
 
+def test_v3_lists_only_frozen_tool_versions_and_sends_their_uuid_scope():
+    session = FakeSession()
+    captured = {}
+    frozen = [{
+        "tool_id": "604b6209-30da-4e57-bf93-73c6867cc101",
+        "tool_version_id": "704b6209-30da-4e57-bf93-73c6867cc101",
+        "server_version_id": "804b6209-30da-4e57-bf93-73c6867cc101",
+        "remote_name": "search",
+        "description": "Pinned description",
+        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}},
+    }]
+    client = McpEdgeClient(
+        "http://demo.test/mcp/execution/f04b6209-30da-4e57-bf93-73c6867cc101/",
+        "execution-token",
+        session_factory=make_factory(session, captured),
+        fixed_tools=frozen,
+        execution_id="f04b6209-30da-4e57-bf93-73c6867cc101",
+        agent_id="904b6209-30da-4e57-bf93-73c6867cc101",
+        revision_id="a04b6209-30da-4e57-bf93-73c6867cc101",
+        generation=4,
+    )
+
+    tools = asyncio.run(client.list_tools())
+    result = asyncio.run(client.call_tool(tools[0]["name"], {"query": "x"}))
+
+    assert tools == [{
+        "name": "tool_604b620930da4e57bf9373c6867cc101",
+        "description": "Pinned description",
+        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}},
+        "tool_id": frozen[0]["tool_id"],
+        "tool_version_id": frozen[0]["tool_version_id"],
+        "server_version_id": frozen[0]["server_version_id"],
+        "remote_name": "search",
+    }]
+    assert result == {"items": ["a"]}
+    assert session.calls == [(tools[0]["name"], {"query": "x"})]
+    assert captured["headers"]["X-Agent-Tool-ID"] == frozen[0]["tool_id"]
+    assert captured["headers"]["X-Agent-Tool-Version-ID"] == frozen[0]["tool_version_id"]
+    assert captured["headers"]["X-Agent-Revision-ID"] == "a04b6209-30da-4e57-bf93-73c6867cc101"
+
+
+def test_v3_rejects_tool_alias_outside_the_fixed_snapshot():
+    client = McpEdgeClient(
+        "http://demo.test/mcp/execution/f04b6209-30da-4e57-bf93-73c6867cc101/",
+        "execution-token",
+        session_factory=make_factory(FakeSession(), {}),
+        fixed_tools=[{
+            "tool_id": "604b6209-30da-4e57-bf93-73c6867cc101",
+            "tool_version_id": "704b6209-30da-4e57-bf93-73c6867cc101",
+            "server_version_id": "804b6209-30da-4e57-bf93-73c6867cc101",
+            "remote_name": "search", "description": "", "input_schema": {"type": "object"},
+        }],
+        execution_id="f04b6209-30da-4e57-bf93-73c6867cc101",
+        agent_id="904b6209-30da-4e57-bf93-73c6867cc101",
+        revision_id="a04b6209-30da-4e57-bf93-73c6867cc101",
+        generation=4,
+    )
+
+    with pytest.raises(McpEdgeError, match="not pinned"):
+        asyncio.run(client.call_tool("tool_unknown", {}))
+
+
 def test_normalizes_text_result_when_structured_result_is_absent():
     session = FakeSession()
 
