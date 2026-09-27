@@ -3,30 +3,42 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import json
 import os
 import uuid
-from typing import Annotated, Any, Callable, Literal
+from collections.abc import Callable
+from contextlib import asynccontextmanager
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
+from .agent_runtime import ManagedAgentRuntime
 from .engine import build_graph, open_postgres_checkpointer
 from .errors import ConfigError
+from .execution_authorization import (
+    AuthorizationError,
+    AuthorizedChatModel,
+    DemoModelAuthorizer,
+    ModelAuthorizer,
+)
+from .framework_capabilities import FrameworkCapabilitiesV2
+from .group_analysis import analyze_group
 from .llm import MockLLM
 from .managed_config import load_managed_spec
-from .agent_runtime import ManagedAgentRuntime
-from .mcp_edge_client import McpEdgeClient
-from .group_analysis import analyze_group
-from .execution_authorization import (
-    AuthorizationError, AuthorizedChatModel, DemoModelAuthorizer, ModelAuthorizer,
-)
 from .managed_config_v3 import ManagedSnapshotV3, parse_managed_snapshot_v3
-from .framework_capabilities import FrameworkCapabilitiesV2
+from .mcp_edge_client import McpEdgeClient
 from .skill_runtime import DemoSkillBodyLoader
 
 
@@ -263,7 +275,7 @@ class ExecutionRequest(StrictModel):
     binding_generation: int = Field(ge=0, strict=True)
     continuity_key: str
     message: str
-    analysis_target: "GroupAnalysisTarget | None" = None
+    analysis_target: GroupAnalysisTarget | None = None
     identity: dict[str, Any]
     scene: dict[str, Any]
     request_metadata: dict[str, Any] = Field(default_factory=dict)
@@ -354,6 +366,18 @@ def _managed_system_prompt(
             if content:
                 sections.append(str(content).strip())
     return "\n\n".join(section for section in sections if section)
+
+
+def _with_analysis_target(system_prompt: str, target: GroupAnalysisTarget | None) -> str:
+    if target is None:
+        return system_prompt
+    context = (
+        "Authorized group analysis target:\n"
+        f"- conversation_id: {target.conversation_id}\n"
+        "When the user asks about this group, call the available group analysis input tool "
+        "with this exact conversation_id. Do not substitute or infer another conversation ID."
+    )
+    return f"{system_prompt}\n\n{context}" if system_prompt else context
 
 
 def _mcp_client_for_execution(config: ManagedAgentConfig, legacy_workload_token: str):
@@ -487,7 +511,7 @@ async def _execute_managed_v3(
         skill_loader=resolved_skill_loader, execution_id=request.execution_id,
         generation=request.binding_generation,
     )
-    system_prompt = snapshot.system_prompt
+    system_prompt = _with_analysis_target(snapshot.system_prompt, request.analysis_target)
     if request.memory_context is not None:
         if not snapshot.memory.read:
             raise ValueError("memory_context_not_enabled_in_snapshot")
@@ -615,7 +639,7 @@ async def stream_managed(
             generation=request.binding_generation,
         )
         reply = ""
-        system_prompt = snapshot.system_prompt
+        system_prompt = _with_analysis_target(snapshot.system_prompt, request.analysis_target)
         if request.memory_context is not None:
             if not snapshot.memory.read:
                 raise ValueError("memory_context_not_enabled_in_snapshot")

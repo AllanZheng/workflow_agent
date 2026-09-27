@@ -3,10 +3,15 @@ import json
 import uuid
 
 import pytest
-from pydantic import ValidationError
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
-from flowagent.execution_service import ExecutionRequest, build_execution_app
+from flowagent.execution_service import (
+    ExecutionRequest,
+    GroupAnalysisTarget,
+    _with_analysis_target,
+    build_execution_app,
+)
 
 
 def _digest(snapshot):
@@ -148,6 +153,16 @@ def test_v3_model_requires_execution_scoped_authorization_fields():
 
     with pytest.raises(ValidationError, match="authorization"):
         ExecutionRequest.model_validate(payload)
+
+
+def test_group_analysis_target_is_added_to_v3_system_prompt():
+    prompt = _with_analysis_target(
+        "Answer concisely.", GroupAnalysisTarget(conversation_id=6),
+    )
+
+    assert "conversation_id: 6" in prompt
+    assert "exact conversation_id" in prompt
+    assert prompt.startswith("Answer concisely.")
 
 
 def test_capabilities_advertise_v3_uuid_lazy_skill_and_authorization_contract():
