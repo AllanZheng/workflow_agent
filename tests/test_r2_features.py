@@ -198,11 +198,15 @@ class TestNodeHooks:
         assert events == [("start", "a"), ("end", "a", None)]
         assert final["vars"]["o"] == "hi"
 
-    def test_broken_hook_does_not_break_workflow(self, capsys):
+    def test_broken_hook_does_not_break_workflow(self, caplog):
         def bad_hook(*args, **kwargs):
             raise RuntimeError("钩子炸了")
 
         hooks = NodeHooks(on_node_start=bad_hook, on_node_end=bad_hook)
         final = WorkflowEngine(self._spec(), MockLLM(), hooks=hooks).run({})
         assert final["vars"]["o"] == "hi"
-        assert "钩子炸了" in capsys.readouterr().err
+        # 钩子错误改为结构化日志（flowagent.hook_failed），不再 print 到 stderr
+        records = [r for r in caplog.records
+                   if getattr(r, "event", None) == "flowagent.hook_failed"]
+        assert len(records) == 2  # start + end 各一条
+        assert all(r.exc_info for r in records)  # 带异常堆栈

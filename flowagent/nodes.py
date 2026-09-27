@@ -12,7 +12,7 @@ human 节点必须**绕过**线程池与重试：LangGraph 的 interrupt() 依�
 import asyncio
 import concurrent.futures
 import json
-import sys
+import logging
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -33,6 +33,8 @@ from .parsers import parse_output, validate_schema
 from .state import WFState
 from .template import get_path, render_template
 from .tools import load_tool
+
+logger = logging.getLogger(__name__)
 
 _MAX_TRACE_LEN = 120
 
@@ -113,8 +115,10 @@ class NodeHooks:
             return
         try:
             handler(*args)
-        except Exception as e:  # noqa: BLE001 - 观测组件故障不阻断业务
-            print(f"[flowagent] 钩子 {event} 执行失败: {e}", file=sys.stderr)
+        except Exception:  # noqa: BLE001 - 观测组件故障不阻断业务
+            logger.exception("hook failed",
+                             extra={"event": "flowagent.hook_failed",
+                                    "hook_event": event})
 
     def emit_start(self, name, state):
         self._safe("on_node_start", name, state)

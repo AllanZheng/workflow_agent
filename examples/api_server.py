@@ -29,6 +29,11 @@ from pydantic import BaseModel
 import flowagent
 from flowagent import WorkflowEngine, load_spec_file
 from flowagent.errors import ConfigError, FlowAgentError
+from flowagent.obs_log import (
+    RequestIdMiddleware,
+    bootstrap_trace_from_env,
+    setup_logging,
+)
 
 _DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "approval.yaml"
 CONFIG_PATH = os.getenv("FLOWAGENT_CONFIG", str(_DEFAULT_CONFIG))
@@ -72,12 +77,17 @@ _RESPONSES = {
 }
 
 
+setup_logging("workflow_agent")
+bootstrap_trace_from_env()   # 平台拉起时可经 TRACE_ID 环境变量注入进程级 trace
+
 app = FastAPI(
     lifespan=lifespan,
     title="flowagent API",
     description="配置驱动的 LangGraph 工作流智能体服务示例",
     version=flowagent.__version__,  # 版本单一来源：flowagent.__version__（评审 4.8）
 )
+
+app.add_middleware(RequestIdMiddleware)
 
 
 def _result(final: dict, thread_id: str) -> JSONResponse:
