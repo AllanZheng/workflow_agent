@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from flowagent.agent_runtime import ManagedAgentRuntime, ToolIterationLimit
 from flowagent.engine import build_graph
@@ -25,6 +25,43 @@ class FakeBoundLlm:
 class FakeLlm:
     def __init__(self, replies): self.bound = FakeBoundLlm(replies); self.tools = None
     def bind_tools(self, tools): self.tools = tools; return self.bound
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("resolution,expected", [
+    ({"status": "not_found"}, "没有找到"),
+    ({"status": "ambiguous", "candidates": [
+        {"conversation_id": 6, "name": "风险会商一组"},
+        {"conversation_id": 7, "name": "风险会商二组"},
+    ]}, "风险会商一组（ID 6）"),
+])
+def test_group_resolution_needing_user_input_finishes_without_repeated_calls(streaming, resolution, expected):
+    class ResolvingMcp:
+        def __init__(self): self.calls = 0
+        async def list_tools(self):
+            return [{"name": "platform_resolve_group"}]
+        async def call_tool(self, name, arguments):
+            self.calls += 1
+            return resolution
+
+    class RepeatingModel:
+        def bind_tools(self, tools): return self
+        async def ainvoke(self, messages):
+            return AIMessage(content="", tool_calls=[{
+                "id": "resolve", "name": "platform_resolve_group", "args": {"name_query": "风险会商群"},
+            }])
+        async def astream(self, messages):
+            response = await self.ainvoke(messages)
+            yield AIMessageChunk(content="", tool_calls=response.tool_calls)
+
+    mcp = ResolvingMcp()
+    runtime = ManagedAgentRuntime(RepeatingModel(), mcp)
+    async def execute():
+        if streaming:
+            return "".join([part async for part in runtime.stream("总结风险会商群", "", 8)])
+        return await runtime.run("总结风险会商群", "", 8)
+    assert expected in asyncio.run(execute())
+    assert mcp.calls == 1
 
 
 def test_agent_calls_mcp_tool_then_returns_final_answer():

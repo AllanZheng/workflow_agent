@@ -14,6 +14,11 @@ class ToolIterationLimit(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class _GroupSelectionRequired:
+    message: str
+
+
 @dataclass
 class RuntimeUsage:
     loaded_skills: list[dict[str, str]] = field(default_factory=list)
@@ -152,7 +157,7 @@ class ManagedAgentRuntime:
         })
         return body
 
-    async def _call_tool(self, call: dict, allowed: set[str]) -> str:
+    async def _call_tool(self, call: dict, allowed: set[str]) -> str | _GroupSelectionRequired:
         name = call["name"]
         if name not in allowed:
             raise ValueError(f"tool_not_allowed: {name}")
@@ -169,6 +174,17 @@ class ManagedAgentRuntime:
                 return self._skill_load_error(skill_id, "skill_load_failed")
         descriptor = getattr(self.mcp_client, "tool_bindings", {}).get(name)
         result = await self.mcp_client.call_tool(name, arguments)
+        if name == "platform_resolve_group" and isinstance(result, dict):
+            if result.get("status") == "not_found":
+                return _GroupSelectionRequired("没有找到你可访问的目标群，请确认群名或提供群 ID。")
+            if result.get("status") == "ambiguous":
+                choices = "、".join(
+                    f"{item['name']}（ID {item['conversation_id']}）"
+                    for item in result.get("candidates", [])
+                    if isinstance(item, dict) and isinstance(item.get("name"), str)
+                    and type(item.get("conversation_id")) is int
+                )
+                return _GroupSelectionRequired(f"找到多个同名或相近的群：{choices}。请说明要分析的群 ID。")
         self._record_skill_load(name, result)
         if descriptor is not None:
             self.usage.called_tools.append({
@@ -211,6 +227,8 @@ class ManagedAgentRuntime:
             messages.append(response)
             for call in tool_calls:
                 result = await self._call_tool(call, allowed)
+                if isinstance(result, _GroupSelectionRequired):
+                    return result.message
                 messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
         raise ToolIterationLimit("managed agent tool iteration limit exceeded")
 
@@ -252,5 +270,8 @@ class ManagedAgentRuntime:
             messages.append(response)
             for call in tool_calls:
                 result = await self._call_tool(call, allowed)
+                if isinstance(result, _GroupSelectionRequired):
+                    yield result.message
+                    return
                 messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
         raise ToolIterationLimit("managed agent tool iteration limit exceeded")
