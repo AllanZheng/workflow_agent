@@ -39,6 +39,7 @@ from .llm import MockLLM
 from .managed_config import load_managed_spec
 from .managed_config_v3 import ManagedSnapshotV3, parse_managed_snapshot_v3
 from .mcp_edge_client import McpEdgeClient
+from .obs_log import RequestIdMiddleware, setup_logging
 from .skill_runtime import DemoSkillBodyLoader
 
 
@@ -768,7 +769,9 @@ def build_execution_app(
         else:
             raise ConfigError("FLOWAGENT_CHECKPOINT must be postgres, memory, or disabled")
 
+    setup_logging("workflow_agent")
     app = FastAPI(title="FlowAgent execution-v1", lifespan=lifespan)
+    app.add_middleware(RequestIdMiddleware)
 
     @app.get("/capabilities")
     async def capabilities(request: Request):
