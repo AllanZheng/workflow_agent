@@ -6,10 +6,10 @@ MVP 阶段每次操作建立并关闭独立 MCP 会话，避免在 Workflow 进�
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
-import uuid
 
 
 class McpEdgeError(RuntimeError):
@@ -88,6 +88,7 @@ class McpEdgeClient:
         self._generation = generation
         self._tool_bindings: dict[str, dict[str, Any]] = {}
         self._visible_tool_aliases: set[str] = set()
+        self._visible_platform_tools: set[str] = set()
         if self._fixed_tools is not None:
             for tool in self._fixed_tools:
                 for reference in ("tool_id", "tool_version_id", "server_version_id"):
@@ -151,6 +152,7 @@ class McpEdgeClient:
             visible_names = {tool.name for tool in result.tools}
             tools = []
             self._visible_tool_aliases = set()
+            self._visible_platform_tools = set()
             for pinned in self._fixed_tools:
                 alias = self._tool_alias(pinned["tool_id"])
                 if alias not in visible_names:
@@ -165,6 +167,17 @@ class McpEdgeClient:
                     "server_version_id": pinned["server_version_id"],
                     "remote_name": pinned["remote_name"],
                 })
+            for tool in result.tools:
+                if tool.name == "platform_resolve_group":
+                    schema = (getattr(tool, "input_schema", None)
+                              or getattr(tool, "inputSchema", None)
+                              or {"type": "object"})
+                    self._visible_platform_tools.add(tool.name)
+                    tools.append({
+                        "name": tool.name,
+                        "description": tool.description or "",
+                        "input_schema": schema,
+                    })
             return tools
 
         tools = []
@@ -184,13 +197,16 @@ class McpEdgeClient:
         call_headers = None
         if self._fixed_tools is not None:
             pinned = self._tool_bindings.get(name)
-            if pinned is None or name not in self._visible_tool_aliases:
+            if name == "platform_resolve_group" and name in self._visible_platform_tools:
+                pinned = None
+            elif pinned is None or name not in self._visible_tool_aliases:
                 raise McpEdgeError("MCP tool is not pinned or currently authorized")
-            remote_name = str(pinned["remote_name"])
-            call_headers = {
-                "X-Agent-Tool-ID": str(pinned["tool_id"]),
-                "X-Agent-Tool-Version-ID": str(pinned["tool_version_id"]),
-            }
+            else:
+                remote_name = str(pinned["remote_name"])
+                call_headers = {
+                    "X-Agent-Tool-ID": str(pinned["tool_id"]),
+                    "X-Agent-Tool-Version-ID": str(pinned["tool_version_id"]),
+                }
         try:
             async with self._session(call_headers) as session:
                 # The edge receives the stable alias advertised in list_tools and

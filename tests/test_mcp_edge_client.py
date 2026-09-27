@@ -115,6 +115,48 @@ def test_v3_lists_only_frozen_tool_versions_and_sends_their_uuid_scope():
     assert captured["headers"]["X-Runtime-ID"] == "b04b6209-30da-4e57-bf93-73c6867cc101"
 
 
+def test_v3_allows_only_advertised_platform_group_resolver_without_uuid_headers():
+    class ResolverSession(FakeSession):
+        async def list_tools(self):
+            pinned = SimpleNamespace(
+                name="tool_604b620930da4e57bf9373c6867cc101",
+                description="Pinned", input_schema={"type": "object"},
+            )
+            resolver = SimpleNamespace(
+                name="platform_resolve_group", description="Resolve a group",
+                input_schema={"type": "object", "required": ["name_query"]},
+            )
+            return SimpleNamespace(tools=[pinned, resolver])
+
+    session = ResolverSession()
+    captured = {}
+    client = McpEdgeClient(
+        "http://demo.test/mcp/execution/f04b6209-30da-4e57-bf93-73c6867cc101/",
+        "execution-token", session_factory=make_factory(session, captured),
+        fixed_tools=[{
+            "tool_id": "604b6209-30da-4e57-bf93-73c6867cc101",
+            "tool_version_id": "704b6209-30da-4e57-bf93-73c6867cc101",
+            "server_version_id": "804b6209-30da-4e57-bf93-73c6867cc101",
+            "remote_name": "fetch_group_analysis_input",
+            "description": "Pinned", "input_schema": {"type": "object"},
+        }],
+        execution_id="f04b6209-30da-4e57-bf93-73c6867cc101",
+        agent_id="904b6209-30da-4e57-bf93-73c6867cc101",
+        revision_id="a04b6209-30da-4e57-bf93-73c6867cc101",
+        runtime_id="b04b6209-30da-4e57-bf93-73c6867cc101", generation=4,
+    )
+
+    tools = asyncio.run(client.list_tools())
+    result = asyncio.run(client.call_tool(
+        "platform_resolve_group", {"name_query": "风险会商群"},
+    ))
+
+    assert "platform_resolve_group" in {tool["name"] for tool in tools}
+    assert result == {"items": ["a"]}
+    assert session.calls[-1][0] == "platform_resolve_group"
+    assert "X-Agent-Tool-ID" not in captured["headers"]
+
+
 def test_v3_rejects_tool_alias_outside_the_fixed_snapshot():
     client = McpEdgeClient(
         "http://demo.test/mcp/execution/f04b6209-30da-4e57-bf93-73c6867cc101/",
