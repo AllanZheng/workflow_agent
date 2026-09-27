@@ -9,6 +9,7 @@
 
 import argparse
 import json
+import logging
 import sys
 import uuid
 
@@ -16,6 +17,9 @@ from . import __version__
 from .config import NodeConfig, check_spec, load_spec_file
 from .engine import WorkflowEngine
 from .errors import ConfigError, FlowAgentError
+from .obs_log import setup_logging, trace_context
+
+logger = logging.getLogger(__name__)
 
 
 def _describe_next(node: NodeConfig) -> str:
@@ -130,11 +134,15 @@ def _finish(final: dict, thread_id: str) -> int:
         if isinstance(pending, dict) and pending.get("error"):
             print(f"  [无效输入] {pending['error']}")
         print(f"  恢复命令: python -m flowagent resume <config> --thread-id {thread_id} --value <你的回复>")
+        logger.info("run paused waiting human",
+                    extra={"event": "cli.run.paused", "thread_id": thread_id})
         return 3
     if final.get("error"):
         print(f"\n[注意] 节点 {final['error']['node']} 执行出错，已按 on_error 降级继续。")
     _print_trace(final)
     _print_vars(final)
+    logger.info("run finished",
+                extra={"event": "cli.run.finished", "thread_id": thread_id})
     return 0
 
 
@@ -170,43 +178,51 @@ def _cmd_run(args) -> int:
     except (json.JSONDecodeError, ValueError, OSError) as e:
         print(f"[输入错误] {e}", file=sys.stderr)
         return 2
-    _hint_inputs(spec, inputs)
+    with trace_context():
+        _hint_inputs(spec, inputs)
 
-    with WorkflowEngine(spec) as engine:
-        thread_id = args.thread_id or uuid.uuid4().hex
-        llm_name = type(engine.llm).__name__
-        print(f"▶ 运行工作流 {spec.workflow.name}（LLM={llm_name}，thread_id={thread_id}）")
+        with WorkflowEngine(spec) as engine:
+            thread_id = args.thread_id or uuid.uuid4().hex
+            llm_name = type(engine.llm).__name__
+            print(f"▶ 运行工作流 {spec.workflow.name}（LLM={llm_name}，thread_id={thread_id}）")
+            logger.info("run started",
+                        extra={"event": "cli.run.started",
+                               "workflow": spec.workflow.name,
+                               "thread_id": thread_id, "llm": llm_name})
 
-        try:
-            if args.stream:
-                print("\n=== 实时执行（流式） ===")
-                final = None
-                shown = 0
-                for chunk in engine.stream(inputs, thread_id=thread_id):
-                    final = chunk
-                    shown = _print_progress(shown, chunk)
-                if final is None:
-                    final = engine.get_state(thread_id).values
-            else:
-                final = engine.run(inputs, thread_id=thread_id)
-        except FlowAgentError as e:
-            print(f"[运行失败] {e}", file=sys.stderr)
-            return 1
-        if getattr(args, "trace_out", None):
-            _write_trace(args.trace_out, final)
-        if getattr(args, "output", None) == "json":
-            pending = WorkflowEngine.waiting_on(final)
-            payload = {
-                "thread_id": thread_id,
-                "status": "waiting_human" if pending is not None else "finished",
-                "pending": pending,
-                "vars": final.get("vars") or {},
-                "error": final.get("error"),
-                "trace": final.get("trace") or [],
-            }
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
-            return 3 if pending is not None else 0
-        return _finish(final, thread_id)
+            try:
+                if args.stream:
+                    print("\n=== 实时执行（流式） ===")
+                    final = None
+                    shown = 0
+                    for chunk in engine.stream(inputs, thread_id=thread_id):
+                        final = chunk
+                        shown = _print_progress(shown, chunk)
+                    if final is None:
+                        final = engine.get_state(thread_id).values
+                else:
+                    final = engine.run(inputs, thread_id=thread_id)
+            except FlowAgentError as e:
+                print(f"[运行失败] {e}", file=sys.stderr)
+                logger.error("run failed",
+                             extra={"event": "cli.run.failed",
+                                    "thread_id": thread_id})
+                return 1
+            if getattr(args, "trace_out", None):
+                _write_trace(args.trace_out, final)
+            if getattr(args, "output", None) == "json":
+                pending = WorkflowEngine.waiting_on(final)
+                payload = {
+                    "thread_id": thread_id,
+                    "status": "waiting_human" if pending is not None else "finished",
+                    "pending": pending,
+                    "vars": final.get("vars") or {},
+                    "error": final.get("error"),
+                    "trace": final.get("trace") or [],
+                }
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+                return 3 if pending is not None else 0
+            return _finish(final, thread_id)
 
 def _write_trace(path: str, final: dict) -> None:
     """执行轨迹导出为 JSONL（每行一个轨迹事件，UTF-8）。"""
@@ -256,10 +272,17 @@ def _cmd_resume(args) -> int:
             return 2  # 交互式输入被取消
 
         print(f"▶ 恢复工作流 {spec.workflow.name}（thread_id={args.thread_id}）")
+        logger.info("resume started",
+                    extra={"event": "cli.resume.started",
+                           "workflow": spec.workflow.name,
+                           "thread_id": args.thread_id})
         try:
             final = engine.resume(value, thread_id=args.thread_id)
         except FlowAgentError as e:
             print(f"[恢复失败] {e}", file=sys.stderr)
+            logger.error("resume failed",
+                         extra={"event": "cli.resume.failed",
+                                "thread_id": args.thread_id})
             return 1
         except Exception as e:  # noqa: BLE001 - 线程不存在等 LangGraph 运行时错误
             print(
@@ -269,6 +292,9 @@ def _cmd_resume(args) -> int:
                 file=sys.stderr,
             )
             return 1
+        logger.info("resume completed",
+                    extra={"event": "cli.resume.finished",
+                           "thread_id": args.thread_id})
         return _finish(final, args.thread_id)
 
 def _resolve_resume_value(raw_value, payload, options):
@@ -376,6 +402,7 @@ def _cmd_new(args) -> int:
 
 
 def main(argv=None) -> int:
+    setup_logging("workflow_agent")
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8")
