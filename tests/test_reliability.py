@@ -244,6 +244,59 @@ class TestOnErrorGoto:
                 },
             })
 
+    def test_node_clears_its_own_stale_error_after_a_later_success(self):
+        """评审问题 6：节点失败一次后被路由重试并成功，不应再被旧 error 误路由。
+
+        旧实现：成功节点的返回值不含 "error" 键，channel 保留上一次失败时
+        写入的值；下一次对同一节点求值 next 时 `err.get("node") == name` 仍为
+        真，会被反复错误地送回 on_error 目标，直到 loop_exhaust 兜底才停止
+        （本例会变成 3 次调用而不是 2 次）。
+        """
+        node = {
+            "type": "tool",
+            "tool": "tests.flaky:flaky_tool",
+            "args": {"key": "selfclear", "fail_times": 1},
+            "output_key": "r",
+            "retries": 0,
+            "on_error": {"goto": "route", "set": {}},
+            "next": "END",
+        }
+        spec = {
+            "workflow": {"name": "selfclear", "start": "n"},
+            "nodes": {
+                "n": node,
+                "route": {
+                    "type": "template", "template": "retry", "output_key": "note",
+                    "next": {
+                        "field": "note",
+                        "rules": [{"when": {"op": "eq", "value": "retry"},
+                                   "goto": "n", "max_loops": 3, "loop_exhaust": "END"}],
+                        "default": "END",
+                    },
+                },
+            },
+        }
+        final = _engine(spec).run({})
+        assert final["vars"]["r"] == "ok after 2 calls"
+        assert final["error"] is None
+
+    def test_other_nodes_success_does_not_erase_an_earlier_nodes_error(self):
+        """只清自己：下游节点（on_error.goto 目标）成功执行不应抹掉上游节点
+        记录的错误——保留给最终状态做诊断展示（对齐既有测试
+        test_timeout_degrades_with_on_error 的期望）。
+        """
+        node = {**self.FLAKY_GOTO, "args": {"key": "keep", "fail_times": 99}, "next": "END"}
+        spec = {
+            "workflow": {"name": "keeperr", "start": "n"},
+            "nodes": {
+                "n": node,
+                "fallback": {"type": "template", "template": "兜底", "output_key": "y", "next": "END"},
+            },
+        }
+        final = _engine(spec).run({})
+        assert final["error"]["node"] == "n"
+        assert final["vars"]["y"] == "兜底"
+
 
 class TestTimeoutSemantics:
     """4.3：超时按时返回；超时不参与重试（副作用至多一次）。"""

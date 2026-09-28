@@ -15,6 +15,7 @@ import json
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -38,8 +39,10 @@ logger = logging.getLogger(__name__)
 
 _MAX_TRACE_LEN = 120
 
-# 子图引擎缓存：同一路径只编译一次
-_SUB_ENGINES: dict = {}
+# 子图引擎缓存：同一路径只编译一次；有界 LRU，避免长期运行下不同
+# (path, llm, checkpointer) 组合无限增长占用内存（评审性能问题 9d）。
+_SUB_ENGINES: "OrderedDict[tuple, object]" = OrderedDict()
+_SUB_ENGINES_MAX = 32
 
 
 class _TextStreamNormalizer:
@@ -59,6 +62,20 @@ class _TextStreamNormalizer:
         visible = content.rstrip()
         self.trailing = content[len(visible):]
         return visible
+
+
+def _clear_own_error(state: dict, name: str) -> dict:
+    """节点成功时，若 state.error 记录的正是这个节点自己的上次失败，则清除它。
+
+    只清自己：路由判断用 error.node == 当前节点名 决定是否走 on_error（评审
+    问题 6）；不清除时，同一节点在循环里失败后重跑成功，仍会被旧 error 误
+    路由。不动其他节点的 error——下游节点（如 on_error.goto 目标）成功执行
+    不应抹掉更早失败节点的诊断信息（见 test_timeout_degrades_with_on_error）。
+    """
+    err = state.get("error")
+    if err and err.get("node") == name:
+        return {"error": None}
+    return {}
 
 
 def _summarize(result: dict) -> dict:
@@ -141,11 +158,15 @@ def _sub_workflow_engine(workflow_file: str, llm=None, checkpointer=None):
         id(llm),
         id(checkpointer),
     )
-    if key not in _SUB_ENGINES:
-        _SUB_ENGINES[key] = WorkflowEngine(
-            load_spec_file(key[0]), llm=llm, checkpointer=checkpointer
-        )
-    return _SUB_ENGINES[key]
+    if key in _SUB_ENGINES:
+        _SUB_ENGINES.move_to_end(key)
+        return _SUB_ENGINES[key]
+    engine = WorkflowEngine(load_spec_file(key[0]), llm=llm, checkpointer=checkpointer)
+    _SUB_ENGINES[key] = engine
+    _SUB_ENGINES.move_to_end(key)
+    if len(_SUB_ENGINES) > _SUB_ENGINES_MAX:
+        _SUB_ENGINES.popitem(last=False)  # 淘汰最久未使用的一项
+    return engine
 
 
 def _current_thread_id() -> str | None:
@@ -293,15 +314,50 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
 
     is_final_reply = stream_final_reply and node.output_key == "reply" and node.next == "END"
 
+    def _start(state: dict) -> tuple[dict, float]:
+        """三种执行器共用的入口记账：钩子 + loop_counts 递增 + 计时起点（评审 7c）。"""
+        if hooks is not None:
+            hooks.emit_start(name, dict(state))
+        counts = dict(state.get("loop_counts") or {})
+        counts[name] = counts.get(name, 0) + 1
+        return counts, time.monotonic()
+
+    def _success(result: dict, counts: dict, started: float, state: dict) -> dict:
+        """三种执行器共用的成功收尾：trace 记录 + 清除本节点自己的旧 error。"""
+        if hooks is not None:
+            hooks.emit_end(name, result, None)
+        return {
+            "vars": result, "loop_counts": counts,
+            "trace": [{"node": name, "status": "ok", "outputs": _summarize(result),
+                       "duration_ms": int((time.monotonic() - started) * 1000)}],
+            **_clear_own_error(state, name),
+        }
+
+    def _failure(exc: Exception, counts: dict, started: float) -> dict:
+        """走 on_error 时的收尾。调用方须先处理"不允许走 on_error"的场景
+        （已发出可见 delta、interrupt 等控制流）——那些场景要直接重新抛出，
+        不能走到这里。"""
+        if hooks is not None:
+            hooks.emit_end(name, None, exc)
+        error = {"node": name, "type": type(exc).__name__, "message": str(exc)}
+        return {
+            "vars": dict(node.on_error.set or {}), "loop_counts": counts,
+            "trace": [{"node": name, "status": "error", "error": error,
+                       "duration_ms": int((time.monotonic() - started) * 1000)}],
+            "error": error,
+        }
+
+    def _reraise_without_on_error(exc: Exception):
+        """没有配置 on_error 时：钩子照常触发，但直接向上抛出。"""
+        if hooks is not None:
+            hooks.emit_end(name, None, exc)
+        raise exc
+
     if node.type == "agent":
         async def agent_executor(state: WFState) -> dict:
             if agent_runtime is None:
                 raise FlowAgentError("受管 Agent Runtime 未初始化")
-            if hooks is not None:
-                hooks.emit_start(name, dict(state))
-            counts = dict(state.get("loop_counts") or {})
-            counts[name] = counts.get(name, 0) + 1
-            started = time.monotonic()
+            counts, started = _start(state)
             values = dict(state.get("vars") or {})
             attempts = node.retries + 1
             emitted_delta = False
@@ -357,24 +413,10 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
             except Exception as exc:
                 if is_final_reply and emitted_delta:
                     raise
-                if hooks is not None:
-                    hooks.emit_end(name, None, exc)
                 if node.on_error is None:
-                    raise
-                error = {"node": name, "type": type(exc).__name__, "message": str(exc)}
-                return {
-                    "vars": dict(node.on_error.set or {}), "loop_counts": counts,
-                    "trace": [{"node": name, "status": "error", "error": error,
-                               "duration_ms": int((time.monotonic() - started) * 1000)}],
-                    "error": error,
-                }
-            if hooks is not None:
-                hooks.emit_end(name, result, None)
-            return {
-                "vars": result, "loop_counts": counts,
-                "trace": [{"node": name, "status": "ok", "outputs": _summarize(result),
-                           "duration_ms": int((time.monotonic() - started) * 1000)}],
-            }
+                    _reraise_without_on_error(exc)
+                return _failure(exc, counts, started)
+            return _success(result, counts, started, state)
 
         return agent_executor
 
@@ -382,11 +424,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
         async def streamed_llm_executor(state: WFState) -> dict:
             if llm is None:
                 raise FlowAgentError("LLM 未初始化")
-            if hooks is not None:
-                hooks.emit_start(name, dict(state))
-            counts = dict(state.get("loop_counts") or {})
-            counts[name] = counts.get(name, 0) + 1
-            started = time.monotonic()
+            counts, started = _start(state)
             emitted_delta = False
             try:
                 ctx = dict(state.get("vars") or {})
@@ -439,33 +477,15 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                 # fallback 而与客户端已累计的 delta 不一致，必须让 SSE error 收尾。
                 if emitted_delta:
                     raise
-                if hooks is not None:
-                    hooks.emit_end(name, None, exc)
                 if node.on_error is None:
-                    raise
-                error = {"node": name, "type": type(exc).__name__, "message": str(exc)}
-                return {
-                    "vars": dict(node.on_error.set or {}), "loop_counts": counts,
-                    "trace": [{"node": name, "status": "error", "error": error,
-                               "duration_ms": int((time.monotonic() - started) * 1000)}],
-                    "error": error,
-                }
-            if hooks is not None:
-                hooks.emit_end(name, result, None)
-            return {
-                "vars": result, "loop_counts": counts,
-                "trace": [{"node": name, "status": "ok", "outputs": _summarize(result),
-                           "duration_ms": int((time.monotonic() - started) * 1000)}],
-            }
+                    _reraise_without_on_error(exc)
+                return _failure(exc, counts, started)
+            return _success(result, counts, started, state)
 
         return streamed_llm_executor
 
     def executor(state: WFState) -> dict:
-        if hooks is not None:
-            hooks.emit_start(name, dict(state))
-        counts = dict(state.get("loop_counts") or {})
-        counts[name] = counts.get(name, 0) + 1
-        started = time.monotonic()
+        counts, started = _start(state)
         try:
             result = _run_with_reliability(name, node, state, llm, checkpointer)
             if node.type == "template" and is_final_reply:
@@ -475,37 +495,9 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
         except GraphBubbleUp:
             raise  # interrupt 等控制流：LangGraph 运行时负责处理
         except Exception as exc:
-            if hooks is not None:
-                hooks.emit_end(name, None, exc)
             if node.on_error is None:
-                raise
-            error = {"node": name, "type": type(exc).__name__, "message": str(exc)}
-            return {
-                "vars": dict(node.on_error.set or {}),
-                "loop_counts": counts,
-                "trace": [
-                    {
-                        "node": name,
-                        "status": "error",
-                        "error": error,
-                        "duration_ms": int((time.monotonic() - started) * 1000),
-                    }
-                ],
-                "error": error,
-            }
-        if hooks is not None:
-            hooks.emit_end(name, result, None)
-        return {
-            "vars": result,
-            "loop_counts": counts,
-            "trace": [
-                {
-                    "node": name,
-                    "status": "ok",
-                    "outputs": _summarize(result),
-                    "duration_ms": int((time.monotonic() - started) * 1000),
-                }
-            ],
-        }
+                _reraise_without_on_error(exc)
+            return _failure(exc, counts, started)
+        return _success(result, counts, started, state)
 
     return executor

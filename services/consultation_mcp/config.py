@@ -39,8 +39,8 @@ class Settings:
             raise SettingsError("IM_BASE_URL must be an http(s) URL")
         if not service_token:
             raise SettingsError("IM_INTERNAL_SERVICE_TOKEN is required")
-        if not mcp_token:
-            raise SettingsError("CONSULTATION_WRITE_MCP_TOKEN is required")
+        # CONSULTATION_WRITE_MCP_TOKEN 评审 D-11：允许留空以放开本服务自身的
+        # 入站鉴权（不影响 IM_INTERNAL_SERVICE_TOKEN 与群/发送者白名单）。
         conversations = _positive_ids(
             source.get("CONSULTATION_ALLOWED_CONVERSATION_IDS", ""),
             "CONSULTATION_ALLOWED_CONVERSATION_IDS",

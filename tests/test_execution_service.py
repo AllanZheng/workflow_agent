@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
 import flowagent.execution_service as execution_service
-from flowagent.execution_service import build_execution_app
+from flowagent.execution_service import _truncate_history, build_execution_app
 from tests.test_managed_config_v3 import _digest, _envelope as _v3_envelope
 
 
@@ -33,9 +33,37 @@ def _envelope():
     }
 
 
+def test_truncate_history_keeps_only_the_last_n_entries():
+    """评审 7f：runtime.history_limit 真正生效。"""
+    history = [{"role": "user", "content": str(i)} for i in range(5)]
+    assert _truncate_history(history, 2) == history[-2:]
+    assert _truncate_history(history, 100) == history
+    # history_limit=0 表示不带历史；注意 Python 切片 history[-0:] 等价于整个
+    # 列表，必须显式特殊处理（风险会商 YAML 正是用 0 表达"无状态"）。
+    assert _truncate_history(history, 0) == []
+    assert _truncate_history(history, -1) == []
+
+
 def test_execution_service_requires_internal_bearer():
     client = TestClient(build_execution_app("secret-token"))
     assert client.post("/execution-v1/respond", json=_envelope()).status_code == 401
+
+
+def test_execution_service_allows_all_requests_when_token_not_configured(caplog):
+    """评审 D-11：FRAMEWORK_INTERNAL_TOKEN 为空时放行并打 WARNING，不再拒绝启动。"""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        client = TestClient(build_execution_app(""))
+    assert any("execution-v1" in record.message for record in caplog.records)
+
+    response = client.post("/execution-v1/respond", json=_envelope())
+    assert response.status_code == 200
+    assert response.json()["reply"] == "hello"
+
+    # 依旧不需要任何 Authorization 头也能通过（无 token 场景不校验 Bearer）
+    denied = client.get("/capabilities")
+    assert denied.status_code == 200
 
 
 def test_execution_service_reports_conservative_workflow_capabilities():
@@ -69,6 +97,20 @@ def test_execution_app_opens_postgres_saver_during_lifespan(monkeypatch):
         assert app.state.checkpointer is saver
 
 
+def test_execution_app_defaults_checkpoint_to_disabled_without_env(monkeypatch):
+    """评审问题 2：默认不再依赖 Postgres——未设置 FLOWAGENT_CHECKPOINT 时不建库连接。"""
+    monkeypatch.delenv("FLOWAGENT_CHECKPOINT", raising=False)
+
+    def fail_if_called():
+        raise AssertionError("checkpoint 默认关闭时不应尝试打开 Postgres 连接")
+
+    monkeypatch.setattr(execution_service, "open_postgres_checkpointer", fail_if_called)
+    app = build_execution_app("secret-token")
+
+    with TestClient(app):
+        assert app.state.checkpointer is None
+
+
 def test_execution_service_accepts_authenticated_reset_without_checkpoint_state():
     response = TestClient(build_execution_app("secret-token")).post(
         "/execution-v1/reset",
@@ -77,6 +119,63 @@ def test_execution_service_accepts_authenticated_reset_without_checkpoint_state(
     )
     assert response.status_code == 200
     assert response.json() == {"ok": True, "continuity_key": "c1", "generation": 2}
+
+
+def test_execution_service_reset_rejects_non_json_body():
+    """评审测试计划第 6 项：非 JSON body 返回 422，不再是裸 500。"""
+    response = TestClient(build_execution_app("secret-token")).post(
+        "/execution-v1/reset",
+        content=b"not json",
+        headers={"Authorization": "Bearer secret-token", "Content-Type": "application/json"},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_reset"
+
+
+def test_execution_service_reset_rejects_non_object_body():
+    """非对象 body（如数组）不应触发 AttributeError -> 500。"""
+    response = TestClient(build_execution_app("secret-token")).post(
+        "/execution-v1/reset", json=["not", "an", "object"],
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_reset"
+
+
+def test_execution_service_v1v2_execution_times_out_via_workflow_timeout_ms(monkeypatch):
+    """评审 7f：workflow.timeout_ms 真正生效，而不是被忽略。"""
+    import asyncio
+
+    payload = _envelope()
+    snapshot = payload["agent_config"]["snapshot"]
+    snapshot["workflow"] = {
+        "yaml": (
+            "workflow:\n  name: t\n  start: slow\nnodes:\n"
+            "  slow:\n    type: agent\n    output_key: reply\n    next: END\n"
+        ),
+        "timeout_ms": 1000,  # SnapshotWorkflow(V1) 的下限就是 1000ms
+    }
+    payload["agent_config"]["config_digest"] = hashlib.sha256(
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    class SlowBoundLlm:
+        async def ainvoke(self, messages):
+            await asyncio.sleep(3)
+            return AIMessage(content="too late")
+
+    class SlowLlm:
+        def bind_tools(self, tools):
+            return SlowBoundLlm()
+
+    monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: SlowLlm())
+
+    response = TestClient(build_execution_app("secret-token")).post(
+        "/execution-v1/respond", json=payload,
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "execution_timeout"
 
 
 def test_execution_service_executes_managed_yaml_and_returns_receipt():

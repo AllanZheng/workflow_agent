@@ -94,3 +94,74 @@ def test_non_consultation_workflow_cannot_use_consultation_service_credential(mo
         assert str(exc) == "managed_model_config_missing"
     else:
         raise AssertionError("unrelated workflow used the consultation-only credential")
+
+
+def test_flowagent_model_credentials_env_extends_the_default_binding_table(monkeypatch):
+    """评审 7e：额外的 credential_id/workflow_name 绑定可通过环境变量声明，
+    不需要再为每个新场景写一条硬编码分支。"""
+    import json as _json
+
+    raw = ("workflow:\n  name: another-managed-agent\n  start: generate\nnodes:\n"
+           "  generate:\n    type: llm\n    system: safe\n    prompt: '{message}'\n"
+           "    output_key: reply\n    next: END\n")
+    credential_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "another-agent:model"))
+    snapshot = _snapshot(raw)
+    snapshot["agent"]["id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, "another-agent:test"))
+    snapshot["model"]["credential_id"] = credential_id
+    captured = {}
+
+    class Model:
+        pass
+
+    def build_model(**kwargs):
+        captured.update(kwargs)
+        return Model()
+
+    monkeypatch.setitem(sys.modules, "langchain_openai", types.SimpleNamespace(ChatOpenAI=build_model))
+    monkeypatch.setenv("FLOWAGENT_ANOTHER_AGENT_API_KEY", "another-service-key")
+    monkeypatch.setenv("FLOWAGENT_MODEL_CREDENTIALS", _json.dumps([{
+        "credential_id": credential_id, "workflow_name": "another-managed-agent",
+        "env_var": "FLOWAGENT_ANOTHER_AGENT_API_KEY",
+    }]))
+    digest = __import__("hashlib").sha256(
+        __import__("json").dumps(snapshot, ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":")).encode()
+    ).hexdigest()
+    config = ManagedAgentConfig.model_validate({
+        "agent_id": snapshot["agent"]["id"], "agent_type": "workflow",
+        "revision_id": str(uuid.uuid4()), "config_digest": digest, "snapshot": snapshot,
+    })
+
+    result = _request_llm(load_managed_spec(raw), config)
+
+    assert isinstance(result, Model)
+    assert captured["api_key"] == "another-service-key"
+    # 内置的风险会商绑定依旧生效，未被环境变量覆盖掉
+    assert config.model_api_key is None
+
+
+def test_unreachable_llm_node_does_not_force_a_model_credential():
+    """评审 7f：needs_model 只看可达节点——YAML 里存在一个不可达的 llm 节点
+    不应该强制要求模型凭据。"""
+    from flowagent.llm import MockLLM
+
+    raw = ("workflow:\n  name: template-only\n  start: generate\nnodes:\n"
+           "  generate:\n    type: template\n    template: '{message}'\n"
+           "    output_key: reply\n    next: END\n"
+           "  orphan:\n    type: llm\n    prompt: 'never reached'\n"
+           "    output_key: unused\n    next: END\n")
+    snapshot = _snapshot(raw)
+    snapshot["model"] = None
+    digest = __import__("hashlib").sha256(
+        __import__("json").dumps(snapshot, ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":")).encode()
+    ).hexdigest()
+    config = ManagedAgentConfig.model_validate({
+        "agent_id": snapshot["agent"]["id"], "agent_type": "workflow",
+        "revision_id": str(uuid.uuid4()), "config_digest": digest, "snapshot": snapshot,
+    })
+
+    result = _request_llm(load_managed_spec(raw), config)
+
+    assert isinstance(result, MockLLM)
+

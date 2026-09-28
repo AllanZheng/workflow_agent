@@ -323,16 +323,23 @@ async def fetch_group_analysis_input(
     for_limit = settings.max_pages_per_segment
     async for page in im.iter_message_pages(conversation_id, max_pages=for_limit):
         page_count += 1
+        oldest_ts: datetime | None = None
         for message in page:
             message_id = message.get("id")
             ts = _parse_message_ts(message.get("created_at"))
             if type(message_id) is not int or ts is None:
                 continue
+            if oldest_ts is None or ts < oldest_ts:
+                oldest_ts = ts
             if not window.start <= ts < window.end or message_id in rows:
                 continue
             line = _format_message(message, nicknames)
             if line:
                 rows[message_id] = (ts, line)
+        # 分页从最新往最老翻；本页最老一条已早于窗口起点，说明更老的页
+        # 不可能再有落在窗口内的消息，提前停止（评审性能问题 9a）。
+        if oldest_ts is not None and oldest_ts < window.start:
+            break
     if page_count >= for_limit:
         partial_reasons.append("page_limit")
     ordered = sorted(rows.items(), key=lambda item: (item[1][0], item[0]))

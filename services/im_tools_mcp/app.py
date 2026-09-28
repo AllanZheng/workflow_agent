@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any, Callable
@@ -35,6 +36,8 @@ from .config import Settings
 from .im_client import ImClient, ImError
 from .tools import TOOL_HANDLERS, ToolInputError, error_payload
 from .window import WindowError
+
+logger = logging.getLogger(__name__)
 
 #: 当前请求的 im 令牌（bearer wrapper 写入，工具回调读取）
 _current_im_token: ContextVar[str] = ContextVar("im_tools_mcp_token", default="")
@@ -59,7 +62,11 @@ ImClientFactory = Callable[[str], ImClient]
 
 
 def bearer_auth_wrapper(child, expected_token: str = ""):
-    """纯 ASGI Bearer 校验包装：失败 401 稳定 JSON，成功写 ContextVar 后放行。"""
+    """纯 ASGI Bearer 校验包装：失败 401 稳定 JSON，成功写 ContextVar 后放行。
+
+    evaluation D-11：expected_token 为空表示本服务的入站鉴权已显式放开，
+    不再要求请求携带 Bearer 头；真实授权仍由下游 im 服务承担。
+    """
 
     async def wrapped(scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -72,9 +79,11 @@ def bearer_auth_wrapper(child, expected_token: str = ""):
                 if auth[:7].lower() == "bearer ":
                     token = auth[7:].strip()
                 break
-        token_ok = bool(token) and (
-            not expected_token or hmac.compare_digest(token, expected_token)
-        )
+        if not expected_token:
+            _current_im_token.set(token)
+            await child(scope, receive, send)
+            return
+        token_ok = bool(token) and hmac.compare_digest(token, expected_token)
         if not token_ok:
             response = JSONResponse(
                 status_code=401,
@@ -107,6 +116,11 @@ def build_app(
 ) -> FastAPI:
     """组装服务应用；im_client_factory 供测试注入（默认按环境配置构造）。"""
     settings = settings or Settings.from_env()
+    if not settings.shared_token:
+        logger.warning(
+            "im-tools-mcp 未配置 IM_TOOLS_MCP_TOKEN，所有请求将被放行"
+            "——仅限受信内网/开发环境使用",
+        )
     default_factory: ImClientFactory = lambda token: ImClient(
         settings.base_url, token, timeout_seconds=settings.timeout_seconds
     )

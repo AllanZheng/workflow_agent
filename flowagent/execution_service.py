@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
 import json
 import os
+import time
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -27,6 +27,9 @@ from pydantic import (
 from .agent_runtime import ManagedAgentRuntime
 from .engine import build_graph, open_postgres_checkpointer
 from .errors import ConfigError
+from .execution.deps import model_credential_bindings
+from .execution.errors import classify_exception, error_response_body
+from .execution.planner import select_flow
 from .execution_authorization import (
     AuthorizationError,
     AuthorizedChatModel,
@@ -39,6 +42,7 @@ from .llm import MockLLM
 from .managed_config import load_managed_spec
 from .managed_config_v3 import ManagedSnapshotV3, parse_managed_snapshot_v3
 from .mcp_edge_client import McpEdgeClient
+from .security import bearer_ok, warn_if_disabled
 from .obs_log import RequestIdMiddleware, setup_logging
 from .skill_runtime import DemoSkillBodyLoader
 
@@ -307,6 +311,31 @@ def _digest(snapshot: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+#: 模型凭据映射表已移到 flowagent/execution/deps.py（Stage 2 架构拆分）；
+#: _request_llm 通过 model_credential_bindings() 调用，行为不变。
+
+
+def _truncate_history(history: list[dict], history_limit: int) -> list[dict]:
+    """评审 7f：runtime.history_limit 真正生效。history_limit<=0 表示
+    不带历史（风险会商等无状态 flow 的明确选择）；注意 Python 切片
+    history[-0:] 等价于整个列表，必须单独处理 0 的情况。
+    """
+    if history_limit <= 0:
+        return []
+    return list(history[-history_limit:])
+
+
+def _execution_deadline_seconds(snapshot: dict) -> float:
+    """评审 7f：workflow.timeout_ms（优先）/ adapter.timeout_ms 真正生效，
+    作为整次 V1/V2 图执行的截止时间；两者都缺省时退回 Pydantic 模型声明的
+    默认值 90 秒。
+    """
+    workflow_cfg = snapshot.get("workflow") or {}
+    adapter_cfg = snapshot.get("adapter") or {}
+    timeout_ms = workflow_cfg.get("timeout_ms") or adapter_cfg.get("timeout_ms") or 90_000
+    return timeout_ms / 1000
+
+
 def _request_llm(spec, config: ManagedAgentConfig):
     if config.snapshot_v3 is not None:
         model = config.snapshot_v3.model
@@ -320,20 +349,19 @@ def _request_llm(spec, config: ManagedAgentConfig):
             api_key=config.model_api_key.get_secret_value(), **parameters,
         )
     model = config.snapshot_data.get("model")
-    needs_model = any(node.type in {"llm", "agent"} for node in spec.nodes.values())
+    # 只看可达节点：YAML 里存在不可达的 llm/agent 节点不应强制要求模型凭据
+    # （评审 7f）。
+    reachable = _reachable_nodes(spec)
+    needs_model = any(spec.nodes[name].type in {"llm", "agent"} for name in reachable)
     if not needs_model:
         return MockLLM()
     model_key = config.model_api_key.get_secret_value() if config.model_api_key else None
-    # Consultation credentials are held by the FlowAgent service. The platform
-    # sends only this non-secret credential reference in its V2 snapshot; it never
-    # transports the provider key in an execution request.
-    consultation_credential_id = str(uuid.uuid5(
-        uuid.NAMESPACE_URL, "risk-consultation:model",
-    ))
-    if (model_key is None and isinstance(model, dict)
-            and spec.workflow.name == "risk-consultation"
-            and model.get("credential_id") == consultation_credential_id):
-        model_key = os.environ.get("FLOWAGENT_RISK_CONSULTATION_MODEL_API_KEY")
+    if model_key is None and isinstance(model, dict):
+        for binding in model_credential_bindings():
+            if (model.get("credential_id") == binding["credential_id"]
+                    and spec.workflow.name == binding["workflow_name"]):
+                model_key = os.environ.get(binding["env_var"])
+                break
     if not isinstance(model, dict) or not model_key:
         raise ConfigError("managed_model_config_missing")
     from langchain_openai import ChatOpenAI
@@ -403,7 +431,7 @@ async def execute_managed(
     skill_loader: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     config = request.agent_config
-    if config.snapshot_v3 is not None:
+    if select_flow(config) == "qa":
         return await _execute_managed_v3(
             request, model_authorizer=model_authorizer, skill_loader=skill_loader,
         )
@@ -426,7 +454,7 @@ async def execute_managed(
     ):
         raise ConfigError("skill_loader_requires_agent_node")
     llm = _request_llm(spec, config)
-    if spec.workflow.group_analysis_mode == "deterministic":
+    if select_flow(config, spec) == "group_analysis":
         reply, result_meta = await analyze_group(
             request, spec, llm, _mcp_client_for_execution(config, mcp_workload_token),
         )
@@ -449,7 +477,10 @@ async def execute_managed(
     )
     initial = {
         "vars": {
-            "message": request.message, "history": request.history,
+            "message": request.message,
+            "history": _truncate_history(
+                request.history, (snapshot.get("runtime") or {}).get("history_limit", 20),
+            ),
             "analysis_target": request.analysis_target.model_dump() if request.analysis_target else None,
             "system_prompt": _managed_system_prompt(
                 snapshot, request.memory_context if snapshot["schema_version"] == 2 else None,
@@ -462,7 +493,9 @@ async def execute_managed(
         {"configurable": {"thread_id": request.execution_id}}
         if checkpointer is not None else None
     )
-    final = await graph.ainvoke(initial, config=graph_config)
+    final = await asyncio.wait_for(
+        graph.ainvoke(initial, config=graph_config), _execution_deadline_seconds(snapshot),
+    )
     reply = str((final.get("vars") or {}).get("reply", ""))
     return {
         "execution_id": request.execution_id,
@@ -607,7 +640,7 @@ async def stream_managed(
     yield {"seq": seq, "kind": "meta", "trace_id": request.execution_id, "framework": "workflow"}
     seq += 1
     config = request.agent_config
-    if config.snapshot_v3 is not None:
+    if select_flow(config) == "qa":
         snapshot = config.snapshot_v3
         authorizer = model_authorizer or DemoModelAuthorizer(
             str(config.model_authorization_url), config.execution_token.get_secret_value(),
@@ -685,7 +718,7 @@ async def stream_managed(
     ):
         raise ConfigError("skill_loader_requires_agent_node")
     llm = _request_llm(spec, config)
-    if spec.workflow.group_analysis_mode == "deterministic":
+    if select_flow(config, spec) == "group_analysis":
         reply, result_meta = await analyze_group(
             request, spec, llm, _mcp_client_for_execution(config, mcp_workload_token),
         )
@@ -712,7 +745,10 @@ async def stream_managed(
     )
     initial = {
         "vars": {
-            "message": request.message, "history": request.history,
+            "message": request.message,
+            "history": _truncate_history(
+                request.history, (snapshot.get("runtime") or {}).get("history_limit", 20),
+            ),
             "analysis_target": request.analysis_target.model_dump() if request.analysis_target else None,
             "system_prompt": _managed_system_prompt(
                 snapshot, request.memory_context if snapshot["schema_version"] == 2 else None,
@@ -726,9 +762,22 @@ async def stream_managed(
         {"configurable": {"thread_id": request.execution_id}}
         if checkpointer is not None else None
     )
-    async for mode, event in graph.astream(
+    # 评审 7f：workflow.timeout_ms 覆盖整条流的耗时，而不仅是单次事件的等待；
+    # asyncio.timeout() 上下文管理器要求 3.11+，这里用剩余预算逐步 wait_for
+    # 兼容 pyproject 声明的 3.10 最低版本。
+    deadline_s = _execution_deadline_seconds(snapshot)
+    started = time.monotonic()
+    stream_iter = graph.astream(
         initial, config=graph_config, stream_mode=["custom", "values"]
-    ):
+    ).__aiter__()
+    while True:
+        remaining = deadline_s - (time.monotonic() - started)
+        if remaining <= 0:
+            raise TimeoutError(f"execution exceeded {deadline_s}s deadline")
+        try:
+            mode, event = await asyncio.wait_for(stream_iter.__anext__(), remaining)
+        except StopAsyncIteration:
+            break
         if mode == "custom" and isinstance(event, dict) and event.get("kind") == "delta":
             content = event.get("content")
             if isinstance(content, str) and content:
@@ -752,8 +801,12 @@ def build_execution_app(
     skill_loader: Callable[..., Any] | None = None,
 ) -> FastAPI:
     if not internal_token:
-        raise ValueError("FRAMEWORK_INTERNAL_TOKEN is required")
-    checkpoint_mode = (os.getenv("FLOWAGENT_CHECKPOINT") or "postgres").strip().lower()
+        # D-11：入站鉴权按评审决策放开，仅告警，不再拒绝启动。
+        warn_if_disabled("execution-v1", internal_token)
+    # D-2：三条现有 flow（V3 问答、群分析、YAML/风险会商）都不需要 HITL，
+    # 默认不再依赖 Postgres；只写不读、从不清理的 checkpoint 因此消失。
+    # 显式设置 FLOWAGENT_CHECKPOINT=postgres 仍可按需开启。
+    checkpoint_mode = (os.getenv("FLOWAGENT_CHECKPOINT") or "disabled").strip().lower()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -776,8 +829,7 @@ def build_execution_app(
     @app.get("/capabilities")
     async def capabilities(request: Request):
         authorization = request.headers.get("authorization", "")
-        expected = f"Bearer {internal_token}"
-        if not hmac.compare_digest(authorization, expected):
+        if not bearer_ok(authorization, internal_token):
             return JSONResponse(status_code=401, content={"error": {"code": "unauthorized"}})
         return {
             "schema_version": 1,
@@ -797,8 +849,7 @@ def build_execution_app(
     @app.get("/capabilities/v2")
     async def capabilities_v2(request: Request):
         authorization = request.headers.get("authorization", "")
-        expected = f"Bearer {internal_token}"
-        if not hmac.compare_digest(authorization, expected):
+        if not bearer_ok(authorization, internal_token):
             return JSONResponse(status_code=401, content={"error": {"code": "unauthorized"}})
         capabilities = FrameworkCapabilitiesV2(
             adapter_version=os.environ.get("AGENT_PLATFORM_BUILD_ID") or "unknown",
@@ -830,8 +881,7 @@ def build_execution_app(
     @app.post("/execution-v1/respond")
     async def respond(request: Request):
         authorization = request.headers.get("authorization", "")
-        expected = f"Bearer {internal_token}"
-        if not hmac.compare_digest(authorization, expected):
+        if not bearer_ok(authorization, internal_token):
             return JSONResponse(status_code=401, content={"error": {"code": "unauthorized"}})
         try:
             payload = ExecutionRequest.model_validate(await request.json())
@@ -843,21 +893,21 @@ def build_execution_app(
                 checkpointer=getattr(request.app.state, "checkpointer", None),
                 model_authorizer=model_authorizer, skill_loader=skill_loader,
             )
-        except AuthorizationError as exc:
-            status = 403 if "denied" in str(exc) else 503
-            return JSONResponse(status_code=status, content={"error": {"code": str(exc)}})
-        except ValueError as exc:
-            code = str(exc)
-            status = 409 if code in {"config_digest_mismatch", "config_identity_mismatch"} else 422
-            return JSONResponse(status_code=status, content={"error": {"code": code}})
-        except ConfigError as exc:
-            return JSONResponse(status_code=422, content={"error": {"code": "managed_config_invalid", "message": str(exc)}})
+        except (AuthorizationError, TimeoutError, asyncio.TimeoutError, ValueError, ConfigError) as exc:
+            # D-12：respond 与 stream 共用 classify_exception，错误码/HTTP 状态
+            # 与改造前逐条一致，只新增 stage/retryable/fallback_eligible/message。
+            error = classify_exception(exc)
+            return JSONResponse(status_code=error.http_status, content=error_response_body(error))
+        except Exception as exc:
+            # 现状：respond() 此前没有兜底 except，未分类异常会原样向上抛出；
+            # 这里补上与 respond_stream 一致的兜底，避免内部细节泄露。
+            error = classify_exception(exc)
+            return JSONResponse(status_code=error.http_status, content=error_response_body(error))
 
     @app.post("/execution-v1/respond/stream")
     async def respond_stream(request: Request):
         authorization = request.headers.get("authorization", "")
-        expected = f"Bearer {internal_token}"
-        if not hmac.compare_digest(authorization, expected):
+        if not bearer_ok(authorization, internal_token):
             return JSONResponse(status_code=401, content={"error": {"code": "unauthorized"}})
         try:
             payload = ExecutionRequest.model_validate(await request.json())
@@ -876,10 +926,15 @@ def build_execution_app(
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             except asyncio.CancelledError:
                 raise
-            except Exception:  # 对外只给稳定错误码，不能泄露配置、工具或密钥。
+            except Exception as exc:  # 对外只给稳定错误码，不能泄露配置、工具或密钥。
+                # D-12：与 respond() 共用 classify_exception，修复此前流式路径
+                # 兜底粗糙（一律 execution_failed）导致的错误码不一致（评审 §7.2）。
+                error = classify_exception(exc)
                 event = {
                     "seq": emitted, "kind": "error", "trace_id": payload.execution_id,
-                    "error_code": "execution_failed", "error_message": "managed execution failed",
+                    "error_code": error.code, "error_message": error.message,
+                    "stage": error.stage, "retryable": error.retryable,
+                    "fallback_eligible": error.fallback_eligible,
                 }
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
@@ -888,10 +943,14 @@ def build_execution_app(
     @app.post("/execution-v1/reset")
     async def reset(request: Request):
         authorization = request.headers.get("authorization", "")
-        expected = f"Bearer {internal_token}"
-        if not hmac.compare_digest(authorization, expected):
+        if not bearer_ok(authorization, internal_token):
             return JSONResponse(status_code=401, content={"error": {"code": "unauthorized"}})
-        body = await request.json()
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse(status_code=422, content={"error": {"code": "invalid_reset"}})
+        if not isinstance(body, dict):
+            return JSONResponse(status_code=422, content={"error": {"code": "invalid_reset"}})
         continuity_key = body.get("continuity_key")
         generation = body.get("generation")
         if not isinstance(continuity_key, str) or not continuity_key or not isinstance(generation, int):

@@ -197,6 +197,26 @@ def test_execution_stream_endpoint_auth_and_exception_have_sse_terminal(monkeypa
     assert events[-1]["error_code"] == "execution_failed"
 
 
+def test_execution_stream_config_error_gets_same_code_as_respond_path(monkeypatch):
+    """D-12：流式路径与 respond 共用 classify_exception，ConfigError 不再被
+    压扁成笼统的 execution_failed（评审 §7.2 记录的现状不一致，本次修复）。"""
+    from flowagent.errors import ConfigError
+
+    def broken_request_llm(*args, **kwargs):
+        raise ConfigError("managed_model_config_missing")
+
+    monkeypatch.setattr(execution_service, "_request_llm", broken_request_llm)
+    response = TestClient(build_execution_app("secret-token")).post(
+        "/execution-v1/respond/stream", json=_envelope(_AGENT_YAML),
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    events = [json.loads(line[5:].strip()) for line in response.text.splitlines() if line.startswith("data:")]
+    assert events[-1]["error_code"] == "managed_config_invalid"
+    assert events[-1]["stage"] == "validate"
+    assert events[-1]["retryable"] is False
+    assert events[-1]["fallback_eligible"] is False
+
+
 def test_execution_stream_runs_pure_text_agent_without_mcp(monkeypatch):
     """没有 MCP 配置时，纯文本 Agent 绑定空工具列表而不是请求 MCP。"""
     payload = _envelope(_AGENT_YAML)

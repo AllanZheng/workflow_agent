@@ -58,6 +58,7 @@ class FakeIm:
     details: dict[int, dict] = field(default_factory=dict)
     messages: dict[int, list[dict]] = field(default_factory=dict)
     forced_status: dict[str, int] = field(default_factory=dict)  # 路径前缀 -> 状态码
+    message_page_calls: int = 0  # 9a 回归测试：记录 /messages 分页请求的实际次数
 
     def handler(self, request: httpx2.Request) -> httpx2.Response:
         path = request.url.path
@@ -94,6 +95,7 @@ class FakeIm:
     def _messages(self, conversation_id: int, request: httpx2.Request) -> httpx2.Response:
         if conversation_id not in self.details:
             return httpx2.Response(404, json={"detail": "会话不存在"})
+        self.message_page_calls += 1
         page_size = int(request.url.params.get("page_size", "50"))
         before_raw = request.url.params.get("before_id")
         after_raw = request.url.params.get("after_id")
@@ -281,6 +283,43 @@ async def test_end_date_includes_day_and_boundary_message_is_not_duplicated():
     assert [m["message_ref"] for m in direct["messages"]] == ["m1", "m2"]
     assert "边界" not in seg0["corpus"]
     assert "边界" in seg1["corpus"]
+
+
+async def test_fetch_group_analysis_input_stops_paging_once_past_window_start():
+    """评审性能问题 9a：翻到早于 window.start 的一页后应立即停止，不再翻更老的页。
+
+    构造 3 页量级的消息（页大小 100）：第 1 页全部落在窗口内；第 2 页全部
+    早于窗口起点（触发提前停止）；第 3 页更老。断言只翻了 2 页，且不会被
+    误标为 page_limit（旧实现会翻满 max_pages 并误标）。
+    """
+    from services.im_tools_mcp.tools import fetch_group_analysis_input
+
+    old_ts = "2026-01-01T00:00:00+00:00"        # 远早于窗口
+    ancient_ts = "2025-01-01T00:00:00+00:00"    # 更早（不应被翻到）
+    in_window = [
+        _msg(i, 1001, (datetime(2026, 8, 1, tzinfo=UTC) + timedelta(minutes=i)).isoformat(),
+             f"新消息{i}")
+        for i in range(121, 221)   # 100 条，全部落在窗口内（最新一页）
+    ]
+    before_window = [_msg(i, 1001, old_ts, f"旧消息{i}") for i in range(21, 121)]      # 100 条
+    ancient = [_msg(i, 1001, ancient_ts, f"远古消息{i}") for i in range(1, 21)]        # 20 条
+    fake = FakeIm(
+        conversations=[_group(1, "项目协作群")],
+        details={1: _detail([{"user_id": 1001, "nickname": "阿明"}])},
+        messages={1: ancient + before_window + in_window},
+    )
+    async with _make_im(fake) as im:
+        result = await fetch_group_analysis_input(im, {
+            "conversation_id": 1,
+            "start": "2026-08-01T00:00:00+00:00",
+            "end": "2026-08-02T00:00:00+00:00",
+        }, settings=SETTINGS)
+    assert result["status"] == "complete"
+    assert result["partial_reasons"] == []
+    assert result["counts"]["fetched_unique"] == 100
+    assert all("新消息" in msg["text"] for msg in result["messages"])
+    # 核心断言：翻到第 2 页（全部早于窗口起点）后立即停止，不再翻第 3 页。
+    assert fake.message_page_calls == 2
 
 
 async def test_fetch_segment_index_out_of_range():
@@ -529,8 +568,19 @@ async def test_flowagent_mcp_edge_client_round_trip():
 
 # ---------------------------------------------------------------------- 鉴权
 
-def test_bearer_missing_returns_401():
-    app, _ = _app_with_fake(FakeIm())
+def test_bearer_missing_is_allowed_when_token_not_configured():
+    """评审 D-11：IM_TOOLS_MCP_TOKEN 未配置时放开鉴权，不再要求 Bearer 头。"""
+    app, _ = _app_with_fake(FakeIm())  # shared_token 默认空串
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp/", json={"jsonrpc": "2.0", "method": "initialize", "id": 1},
+        )
+    assert response.status_code != 401
+
+
+def test_bearer_missing_returns_401_when_token_configured():
+    fake = FakeIm()
+    app, _ = _app_with_fake(fake, shared_token="expected-shared")
     client = TestClient(app)
     response = client.post("/mcp", json={"jsonrpc": "2.0", "method": "initialize", "id": 1})
     assert response.status_code == 401

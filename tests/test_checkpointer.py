@@ -129,7 +129,10 @@ def test_legacy_api_resume_after_lifespan_restart(monkeypatch):
         assert response.json()["vars"]["decision"] == "批准"
 
 
-def test_execution_service_default_requires_postgres_dsn(monkeypatch):
+def test_execution_service_default_disables_checkpoint_without_env(monkeypatch):
+    """评审问题 2：受管 execution 服务默认不再依赖 Postgres（3 条现有 flow
+    都不需要 HITL）；未设置 FLOWAGENT_CHECKPOINT 时不应报错，也不建库连接。
+    """
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
@@ -137,9 +140,60 @@ def test_execution_service_default_requires_postgres_dsn(monkeypatch):
 
     monkeypatch.delenv("FLOWAGENT_CHECKPOINT", raising=False)
     monkeypatch.delenv("FLOWAGENT_DATABASE_URL", raising=False)
-    with pytest.raises(ConfigError, match="FLOWAGENT_DATABASE_URL"):
-        with TestClient(build_execution_app("test-token")):
-            pass
+    app = build_execution_app("test-token")
+    with TestClient(app):
+        assert app.state.checkpointer is None
+
+
+def test_execution_service_multiple_requests_never_touch_checkpoint_when_disabled(monkeypatch):
+    """WF-CKPT-02：checkpoint 默认关闭时，连续多次真实请求不应触发任何
+    checkpoint 读写——build_graph 收到 checkpointer=False，图内部根本不持有
+    saver 实例，因此不是"写入被跳过"，而是"从未触碰"。
+    """
+    import hashlib
+    import json
+
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from flowagent.execution_service import build_execution_app
+
+    monkeypatch.delenv("FLOWAGENT_CHECKPOINT", raising=False)
+    monkeypatch.delenv("FLOWAGENT_DATABASE_URL", raising=False)
+    app = build_execution_app("test-token")
+
+    payload = {
+        "protocol_version": "execution-v1", "execution_id": "e1",
+        "trace": {"trace_id": "e1"}, "binding_generation": 1,
+        "continuity_key": "c1", "message": "hello",
+        "identity": {"user_id": "u1"}, "scene": {"type": "chat"},
+        "agent_config": {
+            "agent_id": "604b6209-30da-4e57-bf93-73c6867cc101", "agent_type": "workflow",
+            "revision_id": "704b6209-30da-4e57-bf93-73c6867cc101",
+        },
+    }
+    snapshot = {
+        "schema_version": 1,
+        "agent": {"id": payload["agent_config"]["agent_id"], "type": "workflow", "name": "Workflow"},
+        "adapter": {"endpoint": "http://workflow:8080"},
+        "model": None,
+        "system_prompt": "answer",
+        "workflow": {"yaml": "workflow:\n  name: t\n  start: answer\nnodes:\n  answer:\n    type: template\n    template: '{message}'\n    output_key: reply\n    next: END\n"},
+    }
+    payload["agent_config"]["config_digest"] = hashlib.sha256(
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    payload["agent_config"]["snapshot"] = snapshot
+
+    with TestClient(app) as client:
+        for _ in range(2):
+            response = client.post(
+                "/execution-v1/respond", json=payload,
+                headers={"Authorization": "Bearer test-token"},
+            )
+            assert response.status_code == 200
+            assert response.json()["reply"] == "hello"
+        assert app.state.checkpointer is None
 
 
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -16,6 +17,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import Settings
 
+logger = logging.getLogger(__name__)
 
 TOOL_NAME = "send_consultation_message"
 _CLIENT_MESSAGE_ID = re.compile(r"^[A-Za-z0-9:_-]{1,64}$")
@@ -30,6 +32,11 @@ def _tool_error(code: str) -> mcp_types.CallToolResult:
 
 
 def build_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
+    if not settings.mcp_token:
+        logger.warning(
+            "consultation-write-mcp 未配置 CONSULTATION_WRITE_MCP_TOKEN，"
+            "所有请求将被放行——仅限受信内网/开发环境使用",
+        )
     async def list_tools(_ctx, _params):
         return mcp_types.ListToolsResult(tools=[mcp_types.Tool(
             name=TOOL_NAME,
@@ -118,6 +125,10 @@ def build_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None 
 
     async def authenticated_child(scope, receive, send):
         if scope["type"] != "http":
+            await child(scope, receive, send)
+            return
+        if not settings.mcp_token:
+            # 评审 D-11：本服务自身入站鉴权已放开，不影响 IM_INTERNAL_SERVICE_TOKEN 与白名单。
             await child(scope, receive, send)
             return
         supplied = ""
