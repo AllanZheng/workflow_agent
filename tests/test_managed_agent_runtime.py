@@ -137,3 +137,44 @@ nodes:
 
     assert final["vars"]["reply"] == "managed-answer"
     assert runtime.calls == [("hello", "rules", 3, [])]
+
+
+# ---------------------------------------------------------------- P3 会话连续性
+
+
+def test_session_plan_starts_new_without_checkpoint():
+    from flowagent.session_continuity import plan_session
+
+    decision = plan_session(has_checkpoint=False,
+                            checkpoint_config_digest=None,
+                            request_config_digest="d1")
+    assert decision.action == "start_new"
+    assert decision.error_code is None
+
+
+def test_session_plan_reuses_only_on_identical_digest_and_schema():
+    from flowagent.session_continuity import plan_session
+
+    same = plan_session(has_checkpoint=True, checkpoint_config_digest="d1",
+                        request_config_digest="d1", checkpoint_schema_version=3,
+                        request_schema_version=3)
+    assert same.action == "reuse_checkpoint"
+
+    changed_config = plan_session(has_checkpoint=True, checkpoint_config_digest="d1",
+                                  request_config_digest="d2")
+    assert changed_config.action == "restart_required"
+    assert changed_config.error_code == "SESSION_RESTART_REQUIRED"
+
+    changed_schema = plan_session(has_checkpoint=True, checkpoint_config_digest="d1",
+                                  request_config_digest="d1",
+                                  checkpoint_schema_version=1, request_schema_version=3)
+    assert changed_schema.action == "restart_required"
+
+
+def test_session_plan_never_silently_continues_unknown_digest():
+    from flowagent.session_continuity import plan_session
+
+    decision = plan_session(has_checkpoint=True, checkpoint_config_digest=None,
+                            request_config_digest="d1")
+    assert decision.action == "restart_required"
+    assert decision.error_code == "SESSION_RESTART_REQUIRED"
