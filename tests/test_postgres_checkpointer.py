@@ -23,8 +23,10 @@ SPEC = {
 }
 
 
+# 验证“异步PostgreSQL`saver``persists`图状态`across`连接”场景下的预期行为。
 @pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 def test_async_postgres_saver_persists_graph_state_across_connections():
+    # 执行当前任务流程并返回运行结果。
     async def run():
         import psycopg
         from psycopg.conninfo import make_conninfo
@@ -61,8 +63,10 @@ def test_async_postgres_saver_persists_graph_state_across_connections():
     asyncio.run(run(), loop_factory=asyncio.SelectorEventLoop)
 
 
+# 验证“PostgreSQL`checkpoint``resumes`待处理`human`节点之后`reconnect`”场景下的预期行为。
 @pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
 def test_postgres_checkpoint_resumes_pending_human_node_after_reconnect():
+    # 执行当前任务流程并返回运行结果。
     async def run():
         import psycopg
         from langgraph.types import Command
@@ -114,11 +118,13 @@ def test_postgres_checkpoint_resumes_pending_human_node_after_reconnect():
     asyncio.run(run(), loop_factory=asyncio.SelectorEventLoop)
 
 
+# 验证“PostgreSQL检查点存储校验必需的连接`string`”场景下的预期行为。
 def test_postgres_checkpointer_requires_connection_string(monkeypatch):
     from flowagent.errors import ConfigError
 
     monkeypatch.delenv("FLOWAGENT_DATABASE_URL", raising=False)
 
+    # 执行当前任务流程并返回运行结果。
     async def run():
         with pytest.raises(ConfigError, match="FLOWAGENT_DATABASE_URL"):
             async with open_postgres_checkpointer():

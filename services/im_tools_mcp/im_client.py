@@ -23,6 +23,7 @@ import httpx
 class ImError(RuntimeError):
     """im 调用失败；对外只暴露稳定错误码，绝不携带令牌或响应原文。"""
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message or code)
         self.code = code
@@ -40,6 +41,7 @@ _SPECIFIC_CONVERSATION_RE = re.compile(r"/conversations/\d+")
 class ImClient:
     """请求级 im REST 客户端；用完必须 aclose（或用 async with）。"""
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(
         self,
         base_url: str,
@@ -55,16 +57,20 @@ class ImClient:
         )
         self._owns_client = client is None
 
+    # 处理`aenter`相关逻辑。
     async def __aenter__(self) -> "ImClient":
         return self
 
+    # 处理`aexit`相关逻辑。
     async def __aexit__(self, *exc_info) -> None:
         await self.aclose()
 
+    # 异步关闭当前连接并释放相关资源。
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
 
+    # 执行获取对应的流程。
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         try:
             response = await self._client.get(path, params=params)

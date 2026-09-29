@@ -38,6 +38,7 @@ class SmokeConfigurationError(ValueError):
     """冒烟环境变量缺失。"""
 
 
+# 读取必需配置值，并在缺失时停止后续处理。
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -62,6 +63,7 @@ async def _login_token() -> str:
     return token
 
 
+# 解析入口参数并启动主流程。
 async def main() -> int:
     token = await _login_token()
     group_query = _required("SMOKE_GROUP_QUERY")

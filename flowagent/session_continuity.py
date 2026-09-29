@@ -19,6 +19,7 @@ class SessionDecision:
     action: Literal["start_new", "reuse_checkpoint", "restart_required"]
     reason: str
 
+    # 处理错误`code`相关逻辑。
     @property
     def error_code(self) -> str | None:
         return SESSION_RESTART_REQUIRED if self.action == "restart_required" else None

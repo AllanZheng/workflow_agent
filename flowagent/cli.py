@@ -22,6 +22,7 @@ from .obs_log import setup_logging, trace_context
 logger = logging.getLogger(__name__)
 
 
+# 处理`describe``next`相关逻辑。
 def _describe_next(node: NodeConfig) -> str:
     nxt = node.next
     if isinstance(nxt, str):
@@ -34,6 +35,7 @@ def _describe_next(node: NodeConfig) -> str:
     return " | ".join(parts)
 
 
+# 处理`print`追踪相关逻辑。
 def _print_trace(final: dict) -> None:
     print("\n=== 执行轨迹 ===")
     for i, step in enumerate(final.get("trace") or [], 1):
@@ -46,6 +48,7 @@ def _print_trace(final: dict) -> None:
             print(f"  {i}. {step['node']} -> {outputs}")
 
 
+# 处理`print``vars`相关逻辑。
 def _print_vars(final: dict) -> None:
     print("\n=== 输出变量 ===")
     for key, value in (final.get("vars") or {}).items():
@@ -65,6 +68,7 @@ def _print_progress(prev_len: int, final: dict) -> int:
     return len(trace)
 
 
+# 处理`cmd`检查相关逻辑。
 def _cmd_check(args) -> int:
     try:
         spec = load_spec_file(args.config)
@@ -96,6 +100,7 @@ def _cmd_check(args) -> int:
     return 0
 
 
+# 处理`cmd``show`相关逻辑。
 def _cmd_show(args) -> int:
     try:
         spec = load_spec_file(args.config)
@@ -113,6 +118,7 @@ def _cmd_show(args) -> int:
     return 0
 
 
+# 加载输入。
 def _load_inputs(args) -> dict:
     if args.input_file:
         with open(args.input_file, encoding="utf-8") as f:
@@ -124,6 +130,7 @@ def _load_inputs(args) -> dict:
     return inputs
 
 
+# 执行结束对应的流程。
 def _finish(final: dict, thread_id: str) -> int:
     pending = WorkflowEngine.waiting_on(final)
     if pending is not None:
@@ -167,6 +174,7 @@ def _hint_inputs(spec, inputs: dict) -> None:
         )
 
 
+# 处理`cmd`运行相关逻辑。
 def _cmd_run(args) -> int:
     try:
         spec = load_spec_file(args.config)
@@ -237,6 +245,7 @@ def _write_trace(path: str, final: dict) -> None:
         print(f"[轨迹导出失败] {e}", file=sys.stderr)
 
 
+# 处理`cmd``resume`相关逻辑。
 def _cmd_resume(args) -> int:
     try:
         spec = load_spec_file(args.config)
@@ -379,6 +388,7 @@ nodes:
 """
 
 
+# 处理`cmd`新建相关逻辑。
 def _cmd_new(args) -> int:
     from pathlib import Path
 
@@ -401,6 +411,7 @@ def _cmd_new(args) -> int:
     return 0
 
 
+# 解析入口参数并启动主流程。
 def main(argv=None) -> int:
     setup_logging("workflow_agent")
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):

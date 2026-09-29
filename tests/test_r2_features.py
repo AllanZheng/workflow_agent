@@ -32,6 +32,7 @@ nodes:
 
 
 class TestHumanOptions:
+    # 验证“`options``included``interrupt`载荷”场景下的预期行为。
     def test_options_included_in_interrupt_payload(self):
         spec = load_spec(yaml.safe_load(APPROVAL_WITH_OPTIONS))
         engine = WorkflowEngine(spec, MockLLM())
@@ -42,6 +43,7 @@ class TestHumanOptions:
         snap = engine.get_state("opt1")
         assert WorkflowEngine.pending_payload(snap) == payload
 
+    # 验证“待处理载荷无针对未知`thread`”场景下的预期行为。
     def test_pending_payload_none_for_unknown_thread(self):
         engine = WorkflowEngine(
             load_spec(
@@ -64,6 +66,7 @@ class TestHumanOptions:
 
 
 class TestInteractiveResume:
+    # 验证“`resume`不包含值`uses``interactive`输入”场景下的预期行为。
     def test_resume_without_value_uses_interactive_input(self, tmp_path, capsys, monkeypatch):
         cfg = tmp_path / "ap.yaml"
         cfg.write_text(APPROVAL_YAML, encoding="utf-8")
@@ -93,6 +96,7 @@ class TestInteractiveResume:
 
 
 class TestTraceOut:
+    # 验证“追踪导出`jsonl`”场景下的预期行为。
     def test_trace_export_jsonl(self, project_root, tmp_path, capsys):
         cfg = str(project_root / "configs" / "customer_service.yaml")
         trace_file = tmp_path / "trace.jsonl"
@@ -111,15 +115,18 @@ class CountingLLM:
 
     name = "counting"
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self):
         self.calls = 0
 
+    # 处理`invoke`相关逻辑。
     def invoke(self, messages, config=None, **kwargs) -> AIMessage:
         self.calls += 1
         return AIMessage(content="计数LLM输出")
 
 
 class TestSubgraphPassthrough:
+    # 验证“`subgraph``reuses``parent`大语言模型`instance`”场景下的预期行为。
     def test_subgraph_reuses_parent_llm_instance(self, tmp_path):
         child = tmp_path / "child.yaml"
         child.write_text(
@@ -158,21 +165,25 @@ class TestToolAllowlist:
         with pytest.raises(ConfigError):
             load_tool("tests.flaky:flaky_tool")
 
+    # 验证“`module``allowlist`”场景下的预期行为。
     def test_module_in_allowlist(self, monkeypatch):
         monkeypatch.setenv("FLOWAGENT_TOOL_MODULES", "flowagent.tools")
         assert callable(load_tool("flowagent.tools:knowledge_base"))
 
+    # 验证“`module``outside``allowlist``rejected`”场景下的预期行为。
     def test_module_outside_allowlist_rejected(self, monkeypatch):
         monkeypatch.setenv("FLOWAGENT_TOOL_MODULES", "flowagent.tools")
         with pytest.raises(ConfigError):
             load_tool("tests.flaky:flaky_tool")
 
+    # 验证“`allowlist``prefix`匹配”场景下的预期行为。
     def test_allowlist_prefix_match(self, monkeypatch):
         monkeypatch.setenv("FLOWAGENT_TOOL_MODULES", "flowagent")
         assert callable(load_tool("flowagent.tools:knowledge_base"))
 
 
 class TestNodeHooks:
+    # 处理`spec`相关逻辑。
     def _spec(self):
         return load_spec(
             {
@@ -188,6 +199,7 @@ class TestNodeHooks:
             }
         )
 
+    # 验证“`hooks`接收启动与`end`”场景下的预期行为。
     def test_hooks_receive_start_and_end(self):
         events = []
         hooks = NodeHooks(
@@ -198,7 +210,9 @@ class TestNodeHooks:
         assert events == [("start", "a"), ("end", "a", None)]
         assert final["vars"]["o"] == "hi"
 
+    # 验证“`broken``hook``does`不`break`工作流”场景下的预期行为。
     def test_broken_hook_does_not_break_workflow(self, caplog):
+        # 处理`bad``hook`相关逻辑。
         def bad_hook(*args, **kwargs):
             raise RuntimeError("钩子炸了")
 

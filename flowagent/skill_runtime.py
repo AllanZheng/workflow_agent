@@ -15,6 +15,7 @@ class SkillLoadError(RuntimeError):
 
 
 class DemoSkillBodyLoader:
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, model_authorization_url: str, execution_token: str,
                  runtime_id: str, *, timeout_seconds: float = 3.0,
                  transport: httpx.AsyncBaseTransport | None = None):
@@ -28,9 +29,11 @@ class DemoSkillBodyLoader:
         self._timeout_seconds = timeout_seconds
         self._transport = transport
 
+    # 生成对象的调试表示。
     def __repr__(self) -> str:
         return f"DemoSkillBodyLoader(url={self._url_template!r})"
 
+    # 处理URL 地址相关逻辑。
     def _url(self, execution_id: str, skill_id: str) -> str:
         parsed = urlsplit(self._url_template)
         suffix = f"/executions/{execution_id}/model-authorization"
@@ -40,6 +43,7 @@ class DemoSkillBodyLoader:
         return urlunsplit((parsed.scheme, parsed.netloc,
                            f"{base_path}/skills/{skill_id}/load", "", ""))
 
+    # 执行对象封装的可调用逻辑。
     async def __call__(self, *, execution_id: str, generation: int,
                        skill: dict[str, Any]) -> str:
         try:

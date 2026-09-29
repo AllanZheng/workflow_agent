@@ -21,6 +21,7 @@ SPEC = {
 }
 
 
+# 验证“默认项校验必需的PostgreSQL`dsn`”场景下的预期行为。
 def test_default_requires_postgres_dsn(monkeypatch):
     monkeypatch.delenv("FLOWAGENT_CHECKPOINT", raising=False)
     monkeypatch.delenv("FLOWAGENT_DATABASE_URL", raising=False)
@@ -29,11 +30,13 @@ def test_default_requires_postgres_dsn(monkeypatch):
     assert isinstance(make_checkpointer("memory"), MemorySaver)
 
 
+# 验证“无效设置项”场景下的预期行为。
 def test_invalid_setting():
     with pytest.raises(ConfigError):
         make_checkpointer("removed-backend")
 
 
+# 验证“`persistent``human``resume`与连接关闭”场景下的预期行为。
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
 @pytest.mark.parametrize("asynchronous", [False, True])
 def test_persistent_human_resume_and_connection_close(monkeypatch, asynchronous):
@@ -49,6 +52,7 @@ def test_persistent_human_resume_and_connection_close(monkeypatch, asynchronous)
     assert connection.closed
     with WorkflowEngine(load_spec(SPEC), MockLLM()) as second:
         if asynchronous:
+            # 处理`resume`相关逻辑。
             async def resume():
                 assert second.pending_payload(await second.aget_state(tid))
                 final = await second.aresume("通过", tid)
@@ -68,12 +72,14 @@ def test_persistent_human_resume_and_connection_close(monkeypatch, asynchronous)
     assert saver.conn.closed
 
 
+# 验证“`setup``failure`关闭连接”场景下的预期行为。
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
 def test_setup_failure_closes_connection(monkeypatch):
     from flowagent.postgres import ManagedPostgresSaver
 
     connections = []
 
+    # 标记失败`setup`。
     def fail_setup(saver):
         connections.append(saver.conn)
         raise RuntimeError("setup failed")
@@ -84,10 +90,12 @@ def test_setup_failure_closes_connection(monkeypatch):
     assert connections[0].closed
 
 
+# 验证“`native`异步`engine``resume`与关闭”场景下的预期行为。
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
 def test_native_async_engine_resume_and_close():
     from flowagent.engine import open_postgres_checkpointer
 
+    # 处理`roundtrip`相关逻辑。
     async def roundtrip():
         tid = uuid.uuid4().hex
         async with open_postgres_checkpointer() as saver:
@@ -108,6 +116,7 @@ def test_native_async_engine_resume_and_close():
         loop.close()
 
 
+# 验证“旧版API`resume`之后`lifespan``restart`”场景下的预期行为。
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
 def test_legacy_api_resume_after_lifespan_restart(monkeypatch):
     pytest.importorskip("fastapi")
@@ -196,6 +205,7 @@ def test_execution_service_multiple_requests_never_touch_checkpoint_when_disable
         assert app.state.checkpointer is None
 
 
+# 验证“`concurrent`同步异步`setup`启用`fresh`结构`then``repeat`”场景下的预期行为。
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
 def test_concurrent_sync_async_setup_on_fresh_schema_then_repeat():
     from concurrent.futures import ThreadPoolExecutor
@@ -208,9 +218,11 @@ def test_concurrent_sync_async_setup_on_fresh_schema_then_repeat():
 
     dsn = os.environ["FLOWAGENT_DATABASE_URL"]
 
+    # 处理`initialize`相关逻辑。
     def initialize(index, barrier):
         barrier.wait(timeout=10)
         if index % 2:
+            # 打开异步。
             async def open_async():
                 async with open_postgres_checkpointer(dsn) as saver:
                     assert not saver.conn.closed
@@ -238,6 +250,7 @@ def test_concurrent_sync_async_setup_on_fresh_schema_then_repeat():
         conn.execute(SETUP_UNLOCK_SQL)
 
 
+# 验证“异步`setup``failure``releases`连接与`lock`”场景下的预期行为。
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL is not configured")
 def test_async_setup_failure_releases_connection_and_lock(monkeypatch):
     import psycopg
@@ -248,12 +261,14 @@ def test_async_setup_failure_releases_connection_and_lock(monkeypatch):
 
     connections = []
 
+    # 标记失败`setup`。
     async def fail_setup(saver):
         connections.append(saver.conn)
         raise RuntimeError("async setup failed")
 
     monkeypatch.setattr(AsyncPostgresSaver, "setup", fail_setup)
 
+    # 处理`attempt`相关逻辑。
     async def attempt():
         with pytest.raises(RuntimeError, match="async setup failed"):
             async with open_postgres_checkpointer():

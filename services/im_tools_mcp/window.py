@@ -37,6 +37,7 @@ ANALYSIS_TIMEZONE = ZoneInfo("Asia/Shanghai")
 class WindowError(ValueError):
     """时间窗非法。code 用于 MCP 错误码：window_invalid / window_too_large。"""
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
@@ -47,6 +48,7 @@ class TimeWindow:
     start: datetime  # aware UTC，含端点
     end: datetime    # aware UTC，含端点
 
+    # 处理`hours`相关逻辑。
     @property
     def hours(self) -> float:
         return (self.end - self.start).total_seconds() / 3600.0

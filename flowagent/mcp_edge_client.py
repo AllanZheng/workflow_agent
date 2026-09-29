@@ -17,8 +17,10 @@ class McpEdgeError(RuntimeError):
 
 
 class _Session(Protocol):
+    # 列出工具。
     async def list_tools(self) -> Any: ...
 
+    # 处理`call`工具相关逻辑。
     async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> Any: ...
 
 
@@ -53,6 +55,7 @@ async def _sdk_session(
 class McpEdgeClient:
     """通过 Demo 暴露的 Streamable HTTP MCP 端点发现和调用工具。"""
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(
         self,
         endpoint: str,
@@ -114,17 +117,21 @@ class McpEdgeClient:
                 self._tool_alias(tool["tool_id"]): tool for tool in self._fixed_tools
             }
 
+    # 生成对象的调试表示。
     def __repr__(self) -> str:
         return f"McpEdgeClient(endpoint={self._endpoint!r}, timeout_seconds={self._timeout_seconds!r})"
 
+    # 处理工具绑定关系相关逻辑。
     @property
     def tool_bindings(self) -> dict[str, dict[str, Any]]:
         return dict(self._tool_bindings)
 
+    # 处理工具`alias`相关逻辑。
     @staticmethod
     def _tool_alias(tool_id: str) -> str:
         return "tool_" + uuid.UUID(str(tool_id)).hex
 
+    # 处理会话相关逻辑。
     def _session(self, extra_headers: Mapping[str, str] | None = None) -> Any:
         headers = {"Authorization": f"Bearer {self._workload_token}"}
         if self._execution_id is not None:
@@ -139,6 +146,7 @@ class McpEdgeClient:
             headers.update(extra_headers)
         return self._session_factory(self._endpoint, headers, self._timeout_seconds)
 
+    # 列出工具。
     async def list_tools(self) -> list[dict[str, Any]]:
         try:
             async with self._session() as session:
@@ -192,6 +200,7 @@ class McpEdgeClient:
             })
         return tools
 
+    # 处理`call`工具相关逻辑。
     async def call_tool(self, name: str, arguments: Mapping[str, Any] | None = None) -> Any:
         remote_name = name
         call_headers = None
@@ -225,6 +234,7 @@ class McpEdgeClient:
             return result.structured_content
         return self._normalize_content(result.content)
 
+    # 规范化内容。
     @staticmethod
     def _normalize_content(content: list[Any]) -> Any:
         normalized: list[Any] = []

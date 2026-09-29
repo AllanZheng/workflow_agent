@@ -7,10 +7,12 @@ from flowagent.errors import ToolError
 _CALLS: dict = {}
 
 
+# 执行重置对应的流程。
 def reset() -> None:
     _CALLS.clear()
 
 
+# 处理`calls`相关逻辑。
 def calls(key: str = "default") -> int:
     return _CALLS.get(key, 0)
 

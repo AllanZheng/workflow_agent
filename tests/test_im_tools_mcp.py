@@ -43,6 +43,7 @@ pytestmark = pytest.mark.anyio
 UTC = timezone.utc
 
 
+# 处理`anyio``backend`相关逻辑。
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
@@ -60,6 +61,7 @@ class FakeIm:
     forced_status: dict[str, int] = field(default_factory=dict)  # 路径前缀 -> 状态码
     message_page_calls: int = 0  # 9a 回归测试：记录 /messages 分页请求的实际次数
 
+    # 处理处理器相关逻辑。
     def handler(self, request: httpx2.Request) -> httpx2.Response:
         path = request.url.path
         for prefix, status in self.forced_status.items():
@@ -75,6 +77,7 @@ class FakeIm:
             return self._messages(int(match.group(1)), request)
         return httpx2.Response(404, json={"detail": "not found"})
 
+    # 列出会话。
     def _list_conversations(self, request: httpx2.Request) -> httpx2.Response:
         page = int(request.url.params.get("page", "1"))
         page_size = int(request.url.params.get("page_size", "20"))
@@ -86,12 +89,14 @@ class FakeIm:
             "page_size": page_size, "has_more": page * page_size < total,
         })
 
+    # 处理详情相关逻辑。
     def _detail(self, conversation_id: int) -> httpx2.Response:
         detail = self.details.get(conversation_id)
         if detail is None:
             return httpx2.Response(404, json={"detail": "会话不存在"})
         return httpx2.Response(200, json=detail)
 
+    # 处理消息相关逻辑。
     def _messages(self, conversation_id: int, request: httpx2.Request) -> httpx2.Response:
         if conversation_id not in self.details:
             return httpx2.Response(404, json={"detail": "会话不存在"})
@@ -130,10 +135,12 @@ def _msg(mid: int, sender: int, ts: str, content, mtype: str = "text", **extra) 
     }
 
 
+# 执行群组对应的流程。
 def _group(cid: int, name: str, member_count: int = 5, ctype: str = "group") -> dict:
     return {"id": cid, "name": name, "type": ctype, "member_count": member_count}
 
 
+# 处理详情相关逻辑。
 def _detail(members: list[dict], name: str = "测试群") -> dict:
     return {"id": 1, "name": name, "type": "group", "members": members,
             "member_count": len(members)}
@@ -142,6 +149,7 @@ def _detail(members: list[dict], name: str = "测试群") -> dict:
 SETTINGS = Settings(base_url="http://im.test")
 
 
+# 构建`im`。
 def _make_im(fake: FakeIm) -> ImClient:
     transport = httpx2.MockTransport(fake.handler)
     return ImClient(
@@ -152,6 +160,7 @@ def _make_im(fake: FakeIm) -> ImClient:
 
 # ---------------------------------------------------------------- find_group
 
+# 验证“查找群组`fuzzy`匹配`case``insensitive`”场景下的预期行为。
 async def test_find_group_fuzzy_match_case_insensitive():
     fake = FakeIm(conversations=[
         _group(11, "项目协作群"), _group(12, "Project-X"),
@@ -163,6 +172,7 @@ async def test_find_group_fuzzy_match_case_insensitive():
     assert result["count"] == 1
 
 
+# 验证“查找群组`caps`候选项`at``ten`”场景下的预期行为。
 async def test_find_group_caps_candidates_at_ten():
     fake = FakeIm(conversations=[
         _group(i, f"售前群-{i}") for i in range(1, 26)
@@ -173,6 +183,7 @@ async def test_find_group_caps_candidates_at_ten():
     assert len(result["groups"]) == 10
 
 
+# 验证“查找群组无匹配`returns`空值不错误”场景下的预期行为。
 async def test_find_group_no_match_returns_empty_not_error():
     fake = FakeIm(conversations=[_group(11, "项目协作群")])
     async with _make_im(fake) as im:
@@ -180,6 +191,7 @@ async def test_find_group_no_match_returns_empty_not_error():
     assert result == {"groups": [], "count": 0}
 
 
+# 验证“查找群组`im``5xx`映射`unreachable`”场景下的预期行为。
 async def test_find_group_im_5xx_maps_to_unreachable():
     fake = FakeIm(forced_status={"/conversations": 503})
     async with _make_im(fake) as im:
@@ -213,6 +225,7 @@ def _august_fixture() -> FakeIm:
     )
 
 
+# 验证“获取筛选`window`与格式化`corpus`”场景下的预期行为。
 async def test_fetch_filters_window_and_formats_corpus():
     fake = _august_fixture()
     async with _make_im(fake) as im:
@@ -236,6 +249,7 @@ async def test_fetch_filters_window_and_formats_corpus():
     assert result["segment"]["total"] == 1
 
 
+# 验证“获取`segments`按`segment``hours`”场景下的预期行为。
 async def test_fetch_segments_by_segment_hours():
     fake = _august_fixture()
     async with _make_im(fake) as im:
@@ -256,6 +270,7 @@ async def test_fetch_segments_by_segment_hours():
     assert seg1["coverage"]["messages"] == 2  # 图片占位也算一条语料
 
 
+# 验证“`end`日期纳入`day`与`boundary`消息判断是否不`duplicated`”场景下的预期行为。
 async def test_end_date_includes_day_and_boundary_message_is_not_duplicated():
     from services.im_tools_mcp.tools import fetch_group_analysis_input
     fake = FakeIm(
@@ -322,6 +337,7 @@ async def test_fetch_group_analysis_input_stops_paging_once_past_window_start():
     assert fake.message_page_calls == 2
 
 
+# 验证“获取`segment``index``out``range`”场景下的预期行为。
 async def test_fetch_segment_index_out_of_range():
     fake = _august_fixture()
     async with _make_im(fake) as im:
@@ -335,6 +351,7 @@ async def test_fetch_segment_index_out_of_range():
     assert getattr(exc_info.value, "code", "") == "segment_out_of_range"
 
 
+# 验证“获取游标`pagination``pulls``everything`”场景下的预期行为。
 async def test_fetch_cursor_pagination_pulls_everything():
     messages = [
         _msg(i, 1001, (datetime(2026, 8, 1, tzinfo=UTC) + timedelta(minutes=5 * i)).isoformat(),
@@ -357,6 +374,7 @@ async def test_fetch_cursor_pagination_pulls_everything():
     assert result["corpus"].splitlines()[-1].endswith("消息150")
 
 
+# 验证“获取`truncates``corpus``at``max``chars`”场景下的预期行为。
 async def test_fetch_truncates_corpus_at_max_chars():
     messages = [
         _msg(i, 1001, (datetime(2026, 8, 1, tzinfo=UTC) + timedelta(minutes=i)).isoformat(),
@@ -379,6 +397,7 @@ async def test_fetch_truncates_corpus_at_max_chars():
     assert len(result["corpus"]) == 3000
 
 
+# 验证“获取默认项`window`判断是否`seven``days``relative`”场景下的预期行为。
 async def test_fetch_default_window_is_seven_days_relative():
     fake = FakeIm(conversations=[_group(1, "项目协作群")],
                   details={1: _detail([{"user_id": 1001, "nickname": "阿明"}])},
@@ -391,6 +410,7 @@ async def test_fetch_default_window_is_seven_days_relative():
     assert 6.99 <= span_days <= 7.01  # 两次取 now 的微秒级漂移容差
 
 
+# 验证“获取`relative`令牌解析”场景下的预期行为。
 async def test_fetch_relative_tokens_resolve():
     fake = FakeIm(conversations=[_group(1, "项目协作群")],
                   details={1: _detail([{"user_id": 1001, "nickname": "阿明"}])},
@@ -404,6 +424,7 @@ async def test_fetch_relative_tokens_resolve():
     assert 29.9 <= (end - start).total_seconds() / 86400 <= 30.1
 
 
+# 验证“获取`window``too``large``guard`”场景下的预期行为。
 async def test_fetch_window_too_large_guard():
     fake = FakeIm(conversations=[_group(1, "项目协作群")],
                   details={1: _detail([{"user_id": 1001, "nickname": "阿明"}])},
@@ -418,6 +439,7 @@ async def test_fetch_window_too_large_guard():
     assert getattr(exc_info.value, "code", "") == "window_too_large"
 
 
+# 验证“获取`cn`日期不包含`year`推断`recent``past`”场景下的预期行为。
 async def test_fetch_cn_date_without_year_infers_recent_past():
     fake = FakeIm(conversations=[_group(1, "项目协作群")],
                   details={1: _detail([{"user_id": 1001, "nickname": "阿明"}])},
@@ -468,6 +490,7 @@ async def test_corpus_never_contains_internal_identifiers():
 def _app_with_fake(fake: FakeIm, *, shared_token: str = "") -> tuple:
     settings = Settings(base_url="http://im.test", shared_token=shared_token)
 
+    # 处理工厂方法相关逻辑。
     def factory(token: str) -> ImClient:
         transport = httpx2.MockTransport(fake.handler)
         return ImClient(
@@ -501,6 +524,7 @@ async def asgi_mcp_session(app, token: str = "im-token"):
             await http.aclose()
 
 
+# 验证“MCP列出群组`analysis`工具包含契约结构”场景下的预期行为。
 async def test_mcp_lists_group_analysis_tools_with_contract_schemas():
     app, _ = _app_with_fake(FakeIm())
     async with asgi_mcp_session(app) as session:
@@ -511,6 +535,7 @@ async def test_mcp_lists_group_analysis_tools_with_contract_schemas():
     assert by_name["fetch_group_messages"].input_schema == FETCH_GROUP_MESSAGES_INPUT_SCHEMA
 
 
+# 验证“MCP`call`查找群组`returns``structured`内容”场景下的预期行为。
 async def test_mcp_call_find_group_returns_structured_content():
     fake = FakeIm(conversations=[_group(11, "项目协作群", 7)])
     app, _ = _app_with_fake(fake)
@@ -522,6 +547,7 @@ async def test_mcp_call_find_group_returns_structured_content():
     ], "count": 1}
 
 
+# 验证“MCP工具错误判断是否错误包含`code`”场景下的预期行为。
 async def test_mcp_tool_error_is_error_with_code():
     fake = FakeIm(forced_status={"/conversations": 503})
     app, _ = _app_with_fake(fake)
@@ -540,7 +566,9 @@ async def test_flowagent_mcp_edge_client_round_trip():
     # 由进程生命周期承担；这里模拟"应用已就绪，客户端按请求开会话"）
     async with app.router.lifespan_context(app):
 
+        # 处理会话工厂方法相关逻辑。
         def session_factory(endpoint, headers, timeout_seconds):
+            # 处理会话相关逻辑。
             @asynccontextmanager
             async def _session():
                 http = httpx2.AsyncClient(
@@ -578,6 +606,7 @@ def test_bearer_missing_is_allowed_when_token_not_configured():
     assert response.status_code != 401
 
 
+# 验证“Bearer 令牌缺失`returns`401当令牌已配置”场景下的预期行为。
 def test_bearer_missing_returns_401_when_token_configured():
     fake = FakeIm()
     app, _ = _app_with_fake(fake, shared_token="expected-shared")
@@ -587,6 +616,7 @@ def test_bearer_missing_returns_401_when_token_configured():
     assert response.json() == {"error": {"code": "unauthorized"}}
 
 
+# 验证“Bearer 令牌`wrong``shared`令牌`returns`401”场景下的预期行为。
 def test_bearer_wrong_shared_token_returns_401():
     fake = FakeIm()
     app, _ = _app_with_fake(fake, shared_token="expected-shared")
@@ -598,6 +628,7 @@ def test_bearer_wrong_shared_token_returns_401():
     assert response.status_code == 401
 
 
+# 验证“Bearer 令牌有效`reaches`MCP`app`不401”场景下的预期行为。
 def test_bearer_valid_reaches_mcp_app_not_401():
     fake = FakeIm()
     app, _ = _app_with_fake(fake, shared_token="expected-shared")
@@ -609,6 +640,7 @@ def test_bearer_valid_reaches_mcp_app_not_401():
     assert response.status_code != 401
 
 
+# 验证“令牌`never``logged`”场景下的预期行为。
 def test_token_never_logged(caplog):
     import logging
 

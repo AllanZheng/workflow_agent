@@ -34,12 +34,15 @@ TOOL_SPEC_BAD = {
 
 
 class TestToolArgReferences:
+    # 验证“`dollar``ref``declared``passes`”场景下的预期行为。
     def test_dollar_ref_declared_passes(self):
         assert analyze_references(load_spec(TOOL_SPEC)) == []
 
+    # 验证“`dollar``ref``undeclared``reported`”场景下的预期行为。
     def test_dollar_ref_undeclared_reported(self):
         assert analyze_references(load_spec(TOOL_SPEC_BAD)) == ["tickit"]
 
+    # 验证“`dollar``ref``dotted``uses``root`”场景下的预期行为。
     def test_dollar_ref_dotted_uses_root(self):
         spec = {
             "workflow": {"name": "t", "start": "a", "inputs": ["ticket"]},
@@ -63,6 +66,7 @@ CS_CFG = "configs/customer_service.yaml"
 
 
 class TestInputHints:
+    # 验证“`matching`输入无`hint`”场景下的预期行为。
     def test_matching_inputs_no_hint(self, project_root, capsys):
         cfg = str(Path(project_root) / CS_CFG)
         code = main(["run", cfg, "--input", json.dumps({"ticket": "退款"})])
@@ -70,6 +74,7 @@ class TestInputHints:
         assert code == 0
         assert "输入提示" not in err
 
+    # 验证“`typo`密钥`warns``but``proceeds`”场景下的预期行为。
     def test_typo_key_warns_but_proceeds(self, project_root, capsys):
         cfg = str(Path(project_root) / CS_CFG)
         code = main(["run", cfg, "--input", json.dumps({"tickit": "退款"})])
@@ -78,6 +83,7 @@ class TestInputHints:
         assert "未在 workflow.inputs 中声明" in err
         assert "tickit" in err
 
+    # 验证“缺失`declared`密钥`warns`”场景下的预期行为。
     def test_missing_declared_key_warns(self, project_root, capsys):
         cfg = str(Path(project_root) / CS_CFG)
         code = main(["run", cfg, "--input", json.dumps({})])
@@ -86,6 +92,7 @@ class TestInputHints:
         assert "已声明但本次未提供" in err
         assert "ticket" in err
 
+    # 验证“无`hints`当输入`undeclared`”场景下的预期行为。
     def test_no_hints_when_inputs_undeclared(self, tmp_path, capsys):
         cfg = tmp_path / "noinputs.yaml"
         cfg.write_text(

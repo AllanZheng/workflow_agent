@@ -61,6 +61,7 @@ YAML_TEXT = (Path(__file__).resolve().parents[1]
              / "configs" / "managed" / "group_analysis.yaml").read_text(encoding="utf-8")
 
 
+# 处理`anyio``backend`相关逻辑。
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
@@ -72,6 +73,7 @@ def _is_tool_message(message) -> bool:
     return type(message).__name__ == "ToolMessage"
 
 
+# 处理`segment`载荷相关逻辑。
 def _segment_payloads(messages) -> list[dict]:
     payloads = []
     for message in messages:
@@ -96,6 +98,7 @@ class AgentLoopModel:
     才进入下一次 ainvoke）。
     """
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, days: int, sample_cap: int | None = None):
         self.days = days
         self.sample_cap = sample_cap
@@ -103,6 +106,7 @@ class AgentLoopModel:
         self.conversation_id: int | None = None
         self.parallel_issued = False
 
+    # 处理`ainvoke`相关逻辑。
     async def ainvoke(self, messages):
         tool_messages = [m for m in messages if _is_tool_message(m)]
         if not tool_messages:
@@ -134,6 +138,7 @@ class AgentLoopModel:
                 ])
         return AIMessage(content=self._digest(messages, total))
 
+    # 处理`digest`相关逻辑。
     def _digest(self, messages, total: int) -> str:
         segments = _segment_payloads(messages)
         covered = sum(seg.get("coverage", {}).get("messages", 0) for seg in segments)
@@ -151,14 +156,17 @@ class AgentLoopModel:
             f"覆盖率：纳入约 {covered} 条消息"
         )
 
+    # 处理`spec`相关逻辑。
     @staticmethod
     def _spec(name: str, args: dict, call_id: str) -> dict:
         return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
 
+    # 处理`call`相关逻辑。
     @classmethod
     def _call(cls, name: str, args: dict, call_id: str) -> AIMessage:
         return AIMessage(content="", tool_calls=[cls._spec(name, args, call_id)])
 
+    # 处理`astream`相关逻辑。
     async def astream(self, messages):
         yield await self.ainvoke(messages)
 
@@ -168,6 +176,7 @@ class E2ELLM:
 
     name = "e2e-fake"
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, *, parse_output: str | None = None, parse_bad: bool = False,
                  report_note: str = "", sample_cap: int | None = None):
         self.parse_output = parse_output or (
@@ -180,11 +189,13 @@ class E2ELLM:
         self.last_days = 7
         self.parse_prompts: list[str] = []
 
+    # 处理`bind`工具相关逻辑。
     def bind_tools(self, tools) -> AgentLoopModel:
         # agent_runtime 传入 OpenAI 形状 schema：{"type":"function","function":{...}}
         assert {tool["function"]["name"] for tool in tools} == {"fetch_group_messages"}
         return AgentLoopModel(self.last_days, sample_cap=self.sample_cap)
 
+    # 处理`invoke`相关逻辑。
     def invoke(self, messages, config=None, **kwargs):
         prompt = str(messages[-1].content)
         if "只输出 JSON" in prompt and "消息：" in prompt:
@@ -210,6 +221,7 @@ class E2ELLM:
             return AIMessage(content=self._report_text())
         return AIMessage(content="{}")
 
+    # 报告文本。
     def _report_text(self) -> str:
         return (
             "## 总结\n本周期完成发布准备与回归验证。\n"
@@ -219,6 +231,7 @@ class E2ELLM:
             "## 汇报要点\n- 待办：发布前附件权限确认\n- 风险：无"
         )
 
+    # 处理`astream`相关逻辑。
     async def astream(self, messages, config=None, **kwargs):
         prompt = str(messages[-1].content)
         assert "请输出群分析报告" in prompt
@@ -254,6 +267,7 @@ def _fake_im(days: int, per_day: int = 3) -> FakeIm:
     )
 
 
+# 处理`envelope`相关逻辑。
 def _envelope(message: str, history: list[dict] | None = None,
               execution_id: str = "e2e-e1", conversation_id: int | None = 11) -> dict:
     snapshot = {
@@ -289,6 +303,7 @@ def _envelope(message: str, history: list[dict] | None = None,
 class E2EStack:
     """离线全链路栈：execution app（真实）+ MCP 会话工厂 + im-tools-mcp（真实）。"""
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, fake_im: FakeIm, llm: E2ELLM):
         self.fake_im = fake_im
         self.llm = llm
@@ -316,6 +331,7 @@ class E2EStack:
                 await self._lifespan_cm.__aexit__(None, None, None)
                 self._lifespan_cm = None
 
+    # 处理客户端相关逻辑。
     def _client(self, token: str) -> ImClient:
         return ImClient(
             "http://im.test", token, timeout_seconds=5,
@@ -333,7 +349,9 @@ class E2EStack:
         等价于"Edge 透传"（鉴权头与超时语义保持不变）。
         """
 
+        # 处理工厂方法相关逻辑。
         def factory(endpoint, headers, timeout_seconds):
+            # 处理会话相关逻辑。
             @asynccontextmanager
             async def _session():
                 http = httpx2.AsyncClient(
@@ -363,6 +381,7 @@ class E2EStack:
                 endpoint, token, session_factory=factory),
         )
 
+    # 处理客户端相关逻辑。
     def client(self) -> httpx2.AsyncClient:
         return httpx2.AsyncClient(
             transport=httpx2.ASGITransport(app=self.execution_app),
@@ -397,6 +416,7 @@ async def test_normal_seven_day_analysis_full_chain(monkeypatch):
     assert "workflow.yaml" in receipt["applied_fields"]
 
 
+# 验证“`custom``taxonomy`判断是否`applied``program`数量”场景下的预期行为。
 async def test_custom_taxonomy_is_applied_to_program_counts(monkeypatch):
     llm = E2ELLM(parse_output=(
         '{"start":"","end":"","days":7,'

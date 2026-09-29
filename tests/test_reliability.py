@@ -8,12 +8,14 @@ from flowagent.errors import ToolError
 from flowagent.llm import MockLLM
 
 
+# 重置`flaky`。
 @pytest.fixture(autouse=True)
 def _reset_flaky():
     flaky.reset()
     yield
 
 
+# 处理`engine`相关逻辑。
 def _engine(spec_dict) -> WorkflowEngine:
     return WorkflowEngine(load_spec(spec_dict), MockLLM())
 
@@ -29,6 +31,7 @@ FLAKY_NODE = {
 
 
 class TestRetry:
+    # 验证“重试`recovers``within``budget`”场景下的预期行为。
     def test_retry_recovers_within_budget(self):
         spec = {"workflow": {"name": "r", "start": "n"},
                 "nodes": {"n": {**FLAKY_NODE, "retries": 3}}}
@@ -36,6 +39,7 @@ class TestRetry:
         assert final["vars"]["r"] == "ok after 3 calls"
         assert flaky.calls("k") == 3  # 首次 + 2 次失败 + 第3次成功 = 3 次调用
 
+    # 验证“重试`exhausted`抛出不包含启用错误”场景下的预期行为。
     def test_retry_exhausted_raises_without_on_error(self):
         spec = {"workflow": {"name": "r", "start": "n"},
                 "nodes": {"n": {**FLAKY_NODE, "retries": 1}}}
@@ -43,6 +47,7 @@ class TestRetry:
             _engine(spec).run({})
         assert flaky.calls("k") == 2  # 首次 + 1 次重试
 
+    # 验证“重试`exhausted``degrades`包含启用错误”场景下的预期行为。
     def test_retry_exhausted_degrades_with_on_error(self):
         node = {
             **FLAKY_NODE,
@@ -54,6 +59,7 @@ class TestRetry:
         assert final["error"]["type"] == "ToolError"
         assert final["vars"]["r"] == "降级"
 
+    # 验证“无重试按默认项”场景下的预期行为。
     def test_no_retry_by_default(self):
         spec = {"workflow": {"name": "r", "start": "n"}, "nodes": {"n": dict(FLAKY_NODE)}}
         with pytest.raises(ToolError):
@@ -107,6 +113,7 @@ class TestRetry:
 
 
 class TestTimeout:
+    # 验证“`timeout`抛出不包含启用错误”场景下的预期行为。
     def test_timeout_raises_without_on_error(self):
         spec = {
             "workflow": {"name": "t", "start": "n"},
@@ -126,6 +133,7 @@ class TestTimeout:
         with pytest.raises((TimeoutError, concurrent.futures.TimeoutError)):
             _engine(spec).run({})
 
+    # 验证“`timeout``degrades`包含启用错误”场景下的预期行为。
     def test_timeout_degrades_with_on_error(self):
         spec = {
             "workflow": {"name": "t", "start": "n"},
@@ -151,6 +159,7 @@ class TestTimeout:
         assert final["error"]["type"] == "TimeoutError"
         assert final["vars"]["msg"] == "完成:超时降级"
 
+    # 验证“`fast`工具`within``timeout``succeeds`”场景下的预期行为。
     def test_fast_tool_within_timeout_succeeds(self):
         spec = {
             "workflow": {"name": "t", "start": "n"},
@@ -182,6 +191,7 @@ class TestOnErrorGoto:
         "on_error": {"goto": "fallback", "set": {"r": "降级"}},
     }
 
+    # 验证“`str``next`错误`goes``goto`”场景下的预期行为。
     def test_str_next_error_goes_to_goto(self):
         spec = {
             "workflow": {"name": "og1", "start": "n"},
@@ -196,6 +206,7 @@ class TestOnErrorGoto:
         assert final["vars"]["y"] == "兜底"   # 走了 goto 分支
         assert "x" not in final["vars"]       # 正常分支未执行
 
+    # 验证“列出`next`错误`goes``goto`”场景下的预期行为。
     def test_list_next_error_goes_to_goto(self):
         spec = {
             "workflow": {"name": "og2", "start": "n"},
@@ -210,6 +221,7 @@ class TestOnErrorGoto:
         assert final["vars"]["y"] == "兜底"
         assert "x" not in final["vars"] and "w" not in final["vars"]
 
+    # 验证“路由`next``goto``takes``precedence``over`路由启用错误”场景下的预期行为。
     def test_route_next_goto_takes_precedence_over_route_on_error(self):
         node = {
             **self.FLAKY_GOTO,
@@ -233,6 +245,7 @@ class TestOnErrorGoto:
         assert final["vars"]["y"] == "节点级"  # node.on_error.goto 优先
         assert "z" not in final["vars"]
 
+    # 验证“无效`goto`目标`rejected``at`加载”场景下的预期行为。
     def test_invalid_goto_target_rejected_at_load(self):
         from flowagent.errors import ConfigError
 
@@ -310,6 +323,7 @@ class TestTimeoutSemantics:
         "next": "END",
     }
 
+    # 验证“`timeout``returns``promptly`”场景下的预期行为。
     def test_timeout_returns_promptly(self):
         import time as _t
         spec = {"workflow": {"name": "t1", "start": "n"}, "nodes": {"n": dict(self.SLOW_NODE)}}
@@ -320,6 +334,7 @@ class TestTimeoutSemantics:
         # 此前 shutdown(wait=True) 会让耗时 ≈ 0.6s；现在必须在 timeout 附近返回
         assert elapsed < 0.3, f"超时未按时返回，耗时 {elapsed:.3f}s"
 
+    # 验证“`timeout``does`不重试`side``effect`”场景下的预期行为。
     def test_timeout_does_not_retry_side_effect(self):
         spec = {"workflow": {"name": "t2", "start": "n"},
                 "nodes": {"n": {**self.SLOW_NODE, "retries": 3, "retry_delay": 0}}}
@@ -328,6 +343,7 @@ class TestTimeoutSemantics:
         # 超时后不重试：副作用工具只执行一次
         assert flaky.calls("slow") == 1
 
+    # 验证“`timeout``degrades``via`启用错误”场景下的预期行为。
     def test_timeout_degrades_via_on_error(self):
         spec = {"workflow": {"name": "t3", "start": "n"},
                 "nodes": {"n": {**self.SLOW_NODE,

@@ -8,6 +8,7 @@ from .app import build_app
 from .config import Settings
 
 
+# 解析入口参数并启动主流程。
 def main() -> int:
     try:
         settings = Settings.from_env()

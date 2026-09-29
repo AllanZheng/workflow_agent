@@ -23,6 +23,7 @@ TOOL_NAME = "send_consultation_message"
 _CLIENT_MESSAGE_ID = re.compile(r"^[A-Za-z0-9:_-]{1,64}$")
 
 
+# 处理工具错误相关逻辑。
 def _tool_error(code: str) -> mcp_types.CallToolResult:
     payload = {"status": "error", "error_code": code}
     return mcp_types.CallToolResult(
@@ -31,12 +32,14 @@ def _tool_error(code: str) -> mcp_types.CallToolResult:
     )
 
 
+# 构建`app`。
 def build_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
     if not settings.mcp_token:
         logger.warning(
             "consultation-write-mcp 未配置 CONSULTATION_WRITE_MCP_TOKEN，"
             "所有请求将被放行——仅限受信内网/开发环境使用",
         )
+    # 列出工具。
     async def list_tools(_ctx, _params):
         return mcp_types.ListToolsResult(tools=[mcp_types.Tool(
             name=TOOL_NAME,
@@ -55,6 +58,7 @@ def build_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None 
             },
         )])
 
+    # 处理`call`工具相关逻辑。
     async def call_tool(_ctx, params):
         args = params.arguments if isinstance(params.arguments, dict) else {}
         conversation_id, sender_id = args.get("conversation_id"), args.get("sender_id")
@@ -123,6 +127,7 @@ def build_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None 
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
 
+    # 处理`authenticated``child`相关逻辑。
     async def authenticated_child(scope, receive, send):
         if scope["type"] != "http":
             await child(scope, receive, send)
@@ -144,6 +149,7 @@ def build_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None 
             return
         await child(scope, receive, send)
 
+    # 处理`lifespan`相关逻辑。
     @asynccontextmanager
     async def lifespan(app):
         async with server.session_manager.run():
@@ -151,6 +157,7 @@ def build_app(settings: Settings, *, transport: httpx.AsyncBaseTransport | None 
 
     app = FastAPI(title="Risk Consultation Write MCP", lifespan=lifespan)
 
+    # 处理健康状态相关逻辑。
     @app.get("/health")
     async def health():
         return {"ok": True}

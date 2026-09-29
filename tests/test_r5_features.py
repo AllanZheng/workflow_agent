@@ -41,12 +41,15 @@ BAD_SPEC = {
 
 
 class TestAnalyzeReferences:
+    # 验证“无`unresolved`”场景下的预期行为。
     def test_no_unresolved(self):
         assert analyze_references(load_spec(GOOD_SPEC)) == []
 
+    # 验证“`detects``unresolved`”场景下的预期行为。
     def test_detects_unresolved(self):
         assert analyze_references(load_spec(BAD_SPEC)) == ["ticket", "unknown_var"]
 
+    # 验证“启用错误设置数量`as``producer`”场景下的预期行为。
     def test_on_error_set_counts_as_producer(self):
         spec = {
             "workflow": {"name": "x", "start": "a", "inputs": ["ticket"]},
@@ -62,6 +65,7 @@ class TestAnalyzeReferences:
         }
         assert analyze_references(load_spec(spec)) == []
 
+    # 验证“路由字段`counted``as``reference`”场景下的预期行为。
     def test_route_field_counted_as_reference(self):
         spec = {
             "workflow": {"name": "x", "start": "a", "inputs": ["ticket"]},
@@ -76,6 +80,7 @@ class TestAnalyzeReferences:
         }
         assert analyze_references(load_spec(spec)) == ["ghost"]
 
+    # 验证“`dotted``reference``uses``root`”场景下的预期行为。
     def test_dotted_reference_uses_root(self):
         spec = {
             "workflow": {"name": "x", "start": "a", "inputs": []},
@@ -91,6 +96,7 @@ class TestAnalyzeReferences:
         }
         assert analyze_references(load_spec(spec)) == []
 
+    # 验证“`real``example`配置`pass``strict`”场景下的预期行为。
     def test_real_example_configs_pass_strict(self):
         for cfg in (
             "configs/customer_service.yaml",
@@ -103,6 +109,7 @@ class TestAnalyzeReferences:
 
 
 class TestCheckStrictCli:
+    # 执行写入对应的流程。
     def _write(self, tmp_path, name, data):
         import yaml
 
@@ -110,16 +117,19 @@ class TestCheckStrictCli:
         cfg.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
         return str(cfg)
 
+    # 验证“`strict``passes`当`declared`”场景下的预期行为。
     def test_strict_passes_when_declared(self, tmp_path, capsys):
         code = main(["check", "--strict", self._write(tmp_path, "g.yaml", GOOD_SPEC)])
         assert code == 0
         assert "引用分析通过" in capsys.readouterr().out
 
+    # 验证“`strict`标记失败启用`unresolved`”场景下的预期行为。
     def test_strict_fails_on_unresolved(self, tmp_path, capsys):
         code = main(["check", "--strict", self._write(tmp_path, "b.yaml", BAD_SPEC)])
         assert code == 1
         assert "未解析引用" in capsys.readouterr().err
 
+    # 验证“`non``strict``warns`仅”场景下的预期行为。
     def test_non_strict_warns_only(self, tmp_path, capsys):
         code = main(["check", self._write(tmp_path, "b2.yaml", BAD_SPEC)])
         out = capsys.readouterr().out
@@ -129,6 +139,7 @@ class TestCheckStrictCli:
 
 
 class TestJsonOutput:
+    # 验证“运行输出JSON`finished`”场景下的预期行为。
     def test_run_output_json_finished(self, project_root, capsys):
         cfg = str(project_root / "configs" / "customer_service.yaml")
         code = main(
@@ -141,6 +152,7 @@ class TestJsonOutput:
         assert payload["vars"]["category"] == "退款"
         assert payload["trace"][0]["node"] == "classify"
 
+    # 验证“运行输出JSON`waiting``human`”场景下的预期行为。
     def test_run_output_json_waiting_human(self, project_root, tmp_path, capsys):
         cfg = str(project_root / "configs" / "approval.yaml")
         with __import__("tests.test_cli", fromlist=["_with_postgres_env"])._with_postgres_env(

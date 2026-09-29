@@ -48,10 +48,12 @@ _SUB_ENGINES_MAX = 32
 class _TextStreamNormalizer:
     """让 text parser 的可见增量与最终 strip 后的值严格一致。"""
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self) -> None:
         self.started = False
         self.trailing = ""
 
+    # 处理`feed`相关逻辑。
     def feed(self, content: str) -> str:
         if not self.started:
             content = content.lstrip()
@@ -122,10 +124,12 @@ def _with_timeout(func, args: tuple, timeout: float | None):
 class NodeHooks:
     """节点级事件钩子（可选）：观测/审计用，钩子异常不影响工作流执行。"""
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, on_node_start=None, on_node_end=None):
         self.on_node_start = on_node_start  # (node_name, state) -> None
         self.on_node_end = on_node_end      # (node_name, result|None, error|None) -> None
 
+    # 处理安全相关逻辑。
     def _safe(self, event, *args):
         handler = getattr(self, event, None)
         if handler is None:
@@ -137,9 +141,11 @@ class NodeHooks:
                              extra={"event": "flowagent.hook_failed",
                                     "hook_event": event})
 
+    # 发出启动。
     def emit_start(self, name, state):
         self._safe("on_node_start", name, state)
 
+    # 发出`end`。
     def emit_end(self, name, result, error):
         self._safe("on_node_end", name, result, error)
 
@@ -354,6 +360,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
         raise exc
 
     if node.type == "agent":
+        # 处理代理`executor`相关逻辑。
         async def agent_executor(state: WFState) -> dict:
             if agent_runtime is None:
                 raise FlowAgentError("受管 Agent Runtime 未初始化")
@@ -368,6 +375,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                         if is_final_reply:
                             writer = get_stream_writer()
 
+                            # 流式处理`answer`。
                             async def stream_answer() -> str:
                                 chunks: list[str] = []
                                 async for delta in agent_runtime.stream(
@@ -421,6 +429,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
         return agent_executor
 
     if node.type == "llm" and is_final_reply:
+        # 处理`streamed`大语言模型`executor`相关逻辑。
         async def streamed_llm_executor(state: WFState) -> dict:
             if llm is None:
                 raise FlowAgentError("LLM 未初始化")
@@ -434,6 +443,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                 messages.append(HumanMessage(render_template(node.prompt, ctx)))
                 writer = get_stream_writer()
 
+                # 流式处理`attempt`。
                 async def stream_attempt():
                     chunks: list[str] = []
                     normalizer = _TextStreamNormalizer()
@@ -484,6 +494,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
 
         return streamed_llm_executor
 
+    # 处理`executor`相关逻辑。
     def executor(state: WFState) -> dict:
         counts, started = _start(state)
         try:

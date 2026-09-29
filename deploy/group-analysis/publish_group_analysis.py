@@ -47,6 +47,7 @@ class PublishConfigurationError(ValueError):
     """发布环境变量非法；消息只含变量名与期望，不含任何令牌。"""
 
 
+# 读取必需配置值，并在缺失时停止后续处理。
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -54,10 +55,12 @@ def _required(name: str) -> str:
     return value
 
 
+# 读取并校验可选配置值。
 def _optional(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip() or default
 
 
+# 将输入解析并校验为正整数。
 def _positive_int(name: str, default: int) -> int:
     try:
         result = int(_optional(name, str(default)))
@@ -68,6 +71,7 @@ def _positive_int(name: str, default: int) -> int:
     return result
 
 
+# 解析并校验 UUID 标识。
 def _uuid(name: str) -> uuid.UUID:
     try:
         return uuid.UUID(_required(name))
@@ -75,6 +79,7 @@ def _uuid(name: str) -> uuid.UUID:
         raise PublishConfigurationError(f"{name} must be a UUID") from exc
 
 
+# 读取并校验主密钥配置。
 def _master_key() -> bytes:
     try:
         key = base64.b64decode(_required("AGENT_CONFIG_MASTER_KEY_B64"), validate=True)
@@ -87,6 +92,7 @@ def _master_key() -> bytes:
     return key
 
 
+# 判断输入值是否为真。
 def _is_true(name: str, default: bool) -> bool:
     raw = os.environ.get(name, "true" if default else "false").strip().lower()
     if raw in {"1", "true", "yes", "on"}:
@@ -122,6 +128,7 @@ def _workflow_yaml() -> str:
     return yaml_text
 
 
+# 生成当前状态的快照。
 def _snapshot(agent_id: uuid.UUID, model_credential_id: uuid.UUID,
               im_credential_id: uuid.UUID) -> dict:
     im_tools_url = _optional(
@@ -133,6 +140,7 @@ def _snapshot(agent_id: uuid.UUID, model_credential_id: uuid.UUID,
 
     server_id = _positive_int("GROUP_ANALYSIS_MCP_SERVER_ID", 0)
 
+    # 处理MCP工具相关逻辑。
     def mcp_tool(exposed: str, schema: dict, description: str, tool_id: int) -> dict:
         return {
             "tool_id": tool_id,
@@ -191,6 +199,7 @@ def _digest(snapshot: dict) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+# 发布数据并返回发布结果。
 async def publish() -> tuple[uuid.UUID, uuid.UUID, bool]:
     # DB 依赖惰性导入：本仓库 venv 无 sqlalchemy，发布须在带该依赖的环境运行
     # （demo_platform venv / 部署容器均满足）；--dry-run 则完全不需要
@@ -326,6 +335,7 @@ async def publish() -> tuple[uuid.UUID, uuid.UUID, bool]:
         await engine.dispose()
 
 
+# 解析入口参数并启动主流程。
 def main() -> int:
     # --dry-run：只构建快照并校验（受管门禁 + schema 同源 + digest），
     # 不触碰数据库、不需要 sqlalchemy —— 供 CI 与操作者预演

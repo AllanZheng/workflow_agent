@@ -6,15 +6,18 @@ import re
 from .errors import OutputParseError
 
 
+# 解析文本。
 def parse_text(content: str) -> str:
     return content.strip() if isinstance(content, str) else str(content)
 
 
+# 解析`lines`。
 def parse_lines(content: str) -> list:
     text = parse_text(content)
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+# 处理`strip``code``fence`相关逻辑。
 def _strip_code_fence(text: str) -> str:
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*[ \t]*\n?", "", text)

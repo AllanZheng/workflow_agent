@@ -28,6 +28,7 @@ def get_path(obj, path: str, default=None):
 def render_template(text: str, ctx: dict) -> str:
     """将模板中的 {var}/{a.b} 替换为上下文取值；未知占位符原样保留。"""
 
+    # 处理`repl`相关逻辑。
     def repl(m: re.Match) -> str:
         key = m.group(1)
         val = get_path(ctx, key, _MISSING)

@@ -68,6 +68,7 @@ def bearer_auth_wrapper(child, expected_token: str = ""):
     不再要求请求携带 Bearer 头；真实授权仍由下游 im 服务承担。
     """
 
+    # 处理`wrapped`相关逻辑。
     async def wrapped(scope, receive, send) -> None:
         if scope["type"] != "http":
             await child(scope, receive, send)
@@ -126,6 +127,7 @@ def build_app(
     )
     make_client = im_client_factory or default_factory
 
+    # 列出处理器。
     async def list_handler(ctx, params) -> mcp_types.ListToolsResult:
         tools = [
             mcp_types.Tool(
@@ -137,6 +139,7 @@ def build_app(
         ]
         return mcp_types.ListToolsResult(tools=tools)
 
+    # 处理`call`处理器相关逻辑。
     async def call_handler(ctx, params) -> mcp_types.CallToolResult:
         entry = TOOL_HANDLERS.get(params.name)
         if entry is None:
@@ -174,6 +177,7 @@ def build_app(
         ),
     )
 
+    # 处理`lifespan`相关逻辑。
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # 父应用是子应用 MCP 会话管理器的唯一驱动方（mount 不传播 lifespan）
@@ -182,6 +186,7 @@ def build_app(
 
     app = FastAPI(title="im-tools-mcp", lifespan=lifespan)
 
+    # 处理健康状态相关逻辑。
     @app.get("/health")
     async def health() -> dict[str, bool]:
         return {"ok": True}

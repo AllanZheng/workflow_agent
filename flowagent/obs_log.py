@@ -49,6 +49,7 @@ def get_request_id() -> str | None:
     return _request_id_var.get()
 
 
+# 处理新建请求标识相关逻辑。
 def new_request_id() -> str:
     return uuid.uuid4().hex
 
@@ -76,6 +77,7 @@ def bootstrap_trace_from_env() -> str | None:
 class _RequestIdFilter(logging.Filter):
     """把当前 contextvar 的 request_id 写进每条记录（handler 级，双 handler 共用）。"""
 
+    # 执行筛选对应的流程。
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = _request_id_var.get() or "-"
         return True
@@ -90,20 +92,24 @@ class _DynamicStreamHandler(logging.StreamHandler):
     stdout/stderr 不变），对测试与运行期重定向安全。
     """
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, stream_name: str) -> None:
         logging.Handler.__init__(self)   # 跳过 StreamHandler 的流绑定
         self._stream_name = stream_name  # "stdout" / "stderr"
 
+    # 执行流式处理对应的流程。
     @property
     def stream(self):                    # 每次取当前流对象
         return getattr(sys, self._stream_name)
 
+    # 执行流式处理对应的流程。
     @stream.setter
     def stream(self, value) -> None:     # StreamHandler.__init__ 会赋值，忽略
         pass
 
 
 class _TextFormatter(logging.Formatter):
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, service: str) -> None:
         super().__init__(
             fmt=f"%(asctime)s %(levelname)s [{service}] "
@@ -112,10 +118,12 @@ class _TextFormatter(logging.Formatter):
 
 
 class _JsonFormatter(logging.Formatter):
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, service: str) -> None:
         super().__init__()
         self._service = service
 
+    # 执行格式化对应的流程。
     def format(self, record: logging.LogRecord) -> str:
         payload = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created))
@@ -175,10 +183,12 @@ class RequestIdMiddleware:
     中间件内的日志动作自身容错，日志故障不影响请求。
     """
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, app) -> None:
         self.app = app
         self.logger = logging.getLogger("obs.request")
 
+    # 执行对象封装的可调用逻辑。
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -196,6 +206,7 @@ class RequestIdMiddleware:
         fields: dict = {"event": "request", "method": scope.get("method"),
                         "path": scope.get("path")}
 
+        # 执行发送对应的流程。
         async def _send(message):
             if message["type"] == "http.response.start":
                 fields["status"] = message["status"]

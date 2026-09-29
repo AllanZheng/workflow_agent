@@ -59,6 +59,7 @@ ERROR_TABLE: dict[str, dict[str, object]] = {
 _VALUE_ERROR_409_CODES = frozenset({"config_digest_mismatch", "config_identity_mismatch"})
 
 
+# 处理`lookup`相关逻辑。
 def _lookup(code: str) -> dict[str, object]:
     return ERROR_TABLE.get(code, ERROR_TABLE["execution_failed"])
 

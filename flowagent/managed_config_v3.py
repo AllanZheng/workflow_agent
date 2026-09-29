@@ -102,6 +102,7 @@ class ManagedSnapshotV3(_StrictModel):
     memory: MemorySnapshotV3
     config_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
+    # 处理`references``are``frozen``consistently`相关逻辑。
     @model_validator(mode="after")
     def _references_are_frozen_consistently(self):
         if self.config.runtime_id != self.runtime_id:
@@ -134,6 +135,7 @@ class ManagedSnapshotV3(_StrictModel):
         return self
 
 
+# 生成快照`digest`。
 def snapshot_digest(snapshot: dict[str, Any]) -> str:
     """Return the Demo V3 canonical digest, excluding its own digest field."""
     content = {key: value for key, value in snapshot.items() if key != "config_digest"}
@@ -142,6 +144,7 @@ def snapshot_digest(snapshot: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+# 解析`managed`生成快照`v3`。
 def parse_managed_snapshot_v3(
     snapshot: dict[str, Any], *, agent_id: uuid.UUID,
     revision_id: uuid.UUID, config_digest: str,

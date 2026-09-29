@@ -9,6 +9,7 @@ from flowagent.llm import MockLLM
 pytestmark = pytest.mark.anyio
 
 
+# 处理`anyio``backend`相关逻辑。
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
@@ -44,12 +45,14 @@ UNGUARDED_LOOP = {
 }
 
 
+# 处理`engine`相关逻辑。
 @pytest.fixture
 def engine() -> WorkflowEngine:
     return WorkflowEngine(load_spec(UNGUARDED_LOOP), MockLLM())
 
 
 class TestRecursionFriendlyError:
+    # 验证“运行抛出`flowagent`错误包含`hint`”场景下的预期行为。
     def test_run_raises_flowagent_error_with_hint(self, engine):
         with pytest.raises(FlowAgentError) as exc_info:
             engine.run({})
@@ -57,6 +60,7 @@ class TestRecursionFriendlyError:
         assert "recursion_limit=5" in message
         assert "max_loops" in message  # 包含修复建议
 
+    # 验证“`original``cause``preserved`”场景下的预期行为。
     def test_original_cause_preserved(self, engine):
         from langgraph.errors import GraphRecursionError
 
@@ -64,14 +68,17 @@ class TestRecursionFriendlyError:
             engine.run({})
         assert isinstance(exc_info.value.__cause__, GraphRecursionError)
 
+    # 验证“流式处理抛出`flowagent`错误”场景下的预期行为。
     def test_stream_raises_flowagent_error(self, engine):
         with pytest.raises(FlowAgentError):
             list(engine.stream({}))
 
+    # 验证“`arun`抛出`flowagent`错误”场景下的预期行为。
     async def test_arun_raises_flowagent_error(self, engine):
         with pytest.raises(FlowAgentError):
             await engine.arun({})
 
+    # 验证“`cli`报告`failure`不包含`traceback`”场景下的预期行为。
     def test_cli_reports_failure_without_traceback(self, tmp_path, capsys):
         import yaml
 
@@ -85,6 +92,7 @@ class TestRecursionFriendlyError:
 
 
 class TestVersionFlag:
+    # 验证“版本`flag`”场景下的预期行为。
     def test_version_flag(self, capsys):
         import flowagent
 

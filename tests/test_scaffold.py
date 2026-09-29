@@ -8,6 +8,7 @@ from flowagent.cli import main
 
 
 class TestScaffold:
+    # 验证“新建`then`检查`strict``then`运行”场景下的预期行为。
     def test_new_then_check_strict_then_run(self, tmp_path, capsys):
         cfg = tmp_path / "my.yaml"
         assert main(["new", str(cfg), "--name", "my_flow"]) == 0
@@ -21,6 +22,7 @@ class TestScaffold:
         out = capsys.readouterr().out
         assert "reply" in out
 
+    # 验证“新建`refuses``overwrite`”场景下的预期行为。
     def test_new_refuses_overwrite(self, tmp_path, capsys):
         cfg = tmp_path / "exists.yaml"
         cfg.write_text("x", encoding="utf-8")
@@ -28,6 +30,7 @@ class TestScaffold:
         assert "已存在" in capsys.readouterr().err
 
 
+# 验证“`basic``usage``example`运行”场景下的预期行为。
 def test_basic_usage_example_runs(project_root):
     result = subprocess.run(
         [sys.executable, str(project_root / "examples" / "basic_usage.py")],
@@ -46,17 +49,20 @@ def test_basic_usage_example_runs(project_root):
 class TestVersionAndPackaging:
     """4.8：版本单一来源 + 包元数据完整。"""
 
+    # 验证“`installed`元数据`matches`运行时版本”场景下的预期行为。
     def test_installed_metadata_matches_runtime_version(self):
         from importlib.metadata import version
         import flowagent
         assert version("flowagent") == flowagent.__version__
 
+    # 验证“`console``script``registered`”场景下的预期行为。
     def test_console_script_registered(self):
         from importlib.metadata import entry_points
         eps = entry_points(group="console_scripts")
         assert any(ep.name == "flowagent" and ep.value.startswith("flowagent")
                    for ep in eps)
 
+    # 验证“版本判断是否090或`newer`”场景下的预期行为。
     def test_version_is_090_or_newer(self):
         import flowagent
         major, minor = (int(x) for x in flowagent.__version__.split(".")[:2])

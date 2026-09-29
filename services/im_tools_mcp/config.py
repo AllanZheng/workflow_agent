@@ -30,6 +30,7 @@ class Settings:
     max_window_days: int = 31
     max_pages_per_segment: int = 100
 
+    # 处理来自环境变量相关逻辑。
     @staticmethod
     def from_env(environ: dict[str, str] | None = None) -> "Settings":
         env = os.environ if environ is None else environ

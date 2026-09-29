@@ -5,11 +5,13 @@ import pytest
 from flowagent.llm import MockLLM
 
 
+# 处理`mock`大语言模型相关逻辑。
 @pytest.fixture
 def mock_llm() -> MockLLM:
     return MockLLM()
 
 
+# 处理`project``root`相关逻辑。
 @pytest.fixture
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -68,6 +70,7 @@ def _isolated_postgres(request, monkeypatch):
         request.addfinalizer(lambda: _drop_schema(os.environ["TEST_DATABASE_URL"], schema))
 
 
+# 处理`drop`结构相关逻辑。
 def _drop_schema(dsn, schema):
     import psycopg
 

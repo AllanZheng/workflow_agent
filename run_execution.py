@@ -7,6 +7,7 @@ import uvicorn
 from flowagent.execution_service import build_execution_app
 
 
+# 解析入口参数并启动主流程。
 def main() -> None:
     token = os.environ.get("FRAMEWORK_INTERNAL_TOKEN", "")
     mcp_token = os.environ.get("AGENT_PLATFORM_MCP_WORKFLOW_TOKEN", "")

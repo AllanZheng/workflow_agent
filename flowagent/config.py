@@ -184,6 +184,7 @@ class WorkflowSpec(BaseModel):
     workflow: WorkflowMeta
     nodes: dict[str, NodeConfig]
 
+    # 检查`references`。
     @model_validator(mode="after")
     def _check_references(self) -> "WorkflowSpec":
         nodes = self.nodes
@@ -195,6 +196,7 @@ class WorkflowSpec(BaseModel):
         if self.workflow.recursion_limit < 1:
             raise ValueError("recursion_limit 至少为 1")
 
+        # 处理有效相关逻辑。
         def valid(target: str) -> bool:
             return target == "END" or target in nodes
 
@@ -260,6 +262,7 @@ def load_spec(data: dict) -> WorkflowSpec:
         raise ConfigError(f"工作流配置非法:\n{e}") from e
 
 
+# 解析`sub`路径。
 def _resolve_sub_path(base_dir: Path, ref: str) -> Path:
     p = Path(ref)
     return p if p.is_absolute() else (base_dir / p)

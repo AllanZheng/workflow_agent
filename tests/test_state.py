@@ -3,6 +3,7 @@
 from flowagent.state import bounded_trace, last_write
 
 
+# 验证“`bounded`追踪`appends``but``caps``at`200`entries`”场景下的预期行为。
 def test_bounded_trace_appends_but_caps_at_200_entries():
     left = [{"node": f"n{i}"} for i in range(199)]
     right = [{"node": "new1"}, {"node": "new2"}]
@@ -13,6 +14,7 @@ def test_bounded_trace_appends_but_caps_at_200_entries():
     assert combined[-1] == {"node": "new2"}
 
 
+# 验证“`bounded`追踪处理无输入”场景下的预期行为。
 def test_bounded_trace_handles_none_inputs():
     assert bounded_trace(None, None) == []
     assert bounded_trace(None, [{"node": "a"}]) == [{"node": "a"}]

@@ -25,17 +25,20 @@ nodes:
 """
 
 
+# 执行写入对应的流程。
 def _write(path, text):
     path.write_text(text, encoding="utf-8")
     return str(path)
 
 
 class TestSubgraphInputCrossCheck:
+    # 验证“`satisfied`输入无`warning`”场景下的预期行为。
     def test_satisfied_inputs_no_warning(self, tmp_path):
         child = _write(tmp_path / "c.yaml", GOOD_CHILD)
         parent = _write(tmp_path / "p.yaml", GOOD_PARENT.format(child=child))
         assert check_spec(load_spec_file(parent)) == []
 
+    # 验证“缺失输入`reported`”场景下的预期行为。
     def test_missing_input_reported(self, tmp_path):
         child = _write(tmp_path / "c.yaml", GOOD_CHILD)
         bad_parent = GOOD_PARENT.format(child=child).replace(
@@ -45,6 +48,7 @@ class TestSubgraphInputCrossCheck:
         warnings = check_spec(load_spec_file(parent))
         assert any("x" in w and "未提供" in w for w in warnings)
 
+    # 验证“`cli`检查`surfaces``subgraph``warning`”场景下的预期行为。
     def test_cli_check_surfaces_subgraph_warning(self, tmp_path, capsys):
         child = _write(tmp_path / "c.yaml", GOOD_CHILD)
         bad_parent = GOOD_PARENT.format(child=child).replace(
@@ -74,6 +78,7 @@ class TestSubgraphInputCrossCheck:
         )
         assert check_spec(spec) == []
 
+    # 验证“`warning``does`不`block`执行”场景下的预期行为。
     def test_warning_does_not_block_execution(self, tmp_path):
         child = _write(tmp_path / "c.yaml", GOOD_CHILD)
         parent = _write(tmp_path / "p.yaml", GOOD_PARENT.format(child=child))
@@ -130,6 +135,7 @@ nodes:
 
 
 class TestRecursiveChainCheck:
+    # 处理`three``level`相关逻辑。
     def _three_level(self, tmp_path, middle_text):
         leaf = _write(tmp_path / "leaf.yaml", LEAF.format(need="deep"))
         _write(tmp_path / "middle.yaml", middle_text.format(leaf=leaf))
@@ -145,16 +151,19 @@ class TestRecursiveChainCheck:
         )
         return load_spec_file(parent)
 
+    # 验证“`deep``chain``break`判断是否`reported`包含路径”场景下的预期行为。
     def test_deep_chain_break_is_reported_with_path(self, tmp_path):
         spec = self._three_level(tmp_path, MIDDLE_BAD)
         warnings = check_spec(spec)
         # leaf 需要的 deep 由更深层供给——应被递归发现且标注链路
         assert any("deep" in w and "链路" in w for w in warnings)
 
+    # 验证“`satisfied``deep``chain`检查是否包含无`warning`”场景下的预期行为。
     def test_satisfied_deep_chain_has_no_warning(self, tmp_path):
         spec = self._three_level(tmp_path, MIDDLE_GOOD)
         assert check_spec(spec) == []
 
+    # 验证“`cli``strict``catches``deep``break`”场景下的预期行为。
     def test_cli_strict_catches_deep_break(self, tmp_path, capsys):
         from flowagent.cli import main
 

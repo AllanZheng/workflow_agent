@@ -71,6 +71,7 @@ def make_router(node_name: str, route: RouteConfig, error_goto: str | None = Non
     高于 route.on_error（避免用户两处重复配置，评审 4.5）。
     """
 
+    # 处理`router`相关逻辑。
     def router(state: dict) -> str:
         err = state.get("error")
         if err and err.get("node") == node_name:

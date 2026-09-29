@@ -34,6 +34,7 @@ FLOWS: dict[str, FlowDefinition] = {
 }
 
 
+# 获取流程。
 def get_flow(name: str) -> FlowDefinition:
     try:
         return FLOWS[name]

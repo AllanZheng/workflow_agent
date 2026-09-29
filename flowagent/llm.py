@@ -25,9 +25,11 @@ class MockLLM:
 
     name = "mock"
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, default: str = MOCK_DEFAULT_REPLY):
         self.default = default
 
+    # 处理`invoke`相关逻辑。
     def invoke(self, messages: list[BaseMessage], config=None, **kwargs) -> AIMessage:
         return AIMessage(content=self.default)
 

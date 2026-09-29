@@ -31,11 +31,13 @@ pytestmark = pytest.mark.anyio
 YAML_PATH = Path(__file__).resolve().parents[1] / "configs" / "managed" / "group_analysis.yaml"
 
 
+# 处理`yaml`文本相关逻辑。
 @pytest.fixture(scope="module")
 def yaml_text() -> str:
     return YAML_PATH.read_text(encoding="utf-8")
 
 
+# 处理`spec`相关逻辑。
 @pytest.fixture(scope="module")
 def spec(yaml_text):
     return load_managed_spec(yaml_text)
@@ -66,6 +68,7 @@ def test_engine_loads_same_yaml(yaml_text):
     assert load_spec(__import__("yaml").safe_load(yaml_text)).workflow.name == "group-analysis"
 
 
+# 验证“`old`修订版本`keeps`旧版路径”场景下的预期行为。
 def test_old_revision_keeps_legacy_path(yaml_text):
     current = load_managed_spec(yaml_text)
     old_yaml = yaml_text.replace("  group_analysis_mode: deterministic\n", "")
@@ -143,10 +146,12 @@ STATS_OK = '{"total_messages": 8, "categories": [{"name": "问题", "count": 3, 
 class ScriptedLLM:
     """按节点 prompt 关键字路由输出的可编程 LLM（llm 节点用）。"""
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, outputs: dict[str, str], capture: list | None = None):
         self.outputs = outputs  # 关键字 -> 输出文本（先命中先出）
         self.capture = capture if capture is not None else []
 
+    # 处理`invoke`相关逻辑。
     def invoke(self, messages, config=None, **kwargs):
         prompt = str(messages[-1].content)
         self.capture.append(prompt)
@@ -160,6 +165,7 @@ class ScriptedLLM:
         for i in range(0, len(text), 8):
             yield AIMessageChunk(content=text[i:i + 8])
 
+    # 执行路由对应的流程。
     def _route(self, prompt: str) -> str:
         for keyword, output in self.outputs.items():
             if keyword in prompt and output is not None:
@@ -176,12 +182,14 @@ class ScriptedLLM:
 class FakeAgentRuntime:
     """注入式 agent runtime：返回固定 digest 或抛错（fetch 节点用）。"""
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, answer: str = "【分段纪要】正常纪要内容", error: Exception | None = None,
                  capture: list | None = None):
         self.answer = answer
         self.error = error
         self.capture = capture if capture is not None else []
 
+    # 执行当前任务流程并返回运行结果。
     async def run(self, message, system_prompt, max_tool_iterations, history=None):
         if self.capture is not None:
             self.capture.append({"message": message, "system": system_prompt})
@@ -189,12 +197,14 @@ class FakeAgentRuntime:
             raise self.error
         return self.answer
 
+    # 执行流式处理对应的流程。
     async def stream(self, message, system_prompt, max_tool_iterations, history=None):
         if self.error is not None:
             raise self.error
         yield self.answer
 
 
+# 执行运行对应的流程。
 async def _run(spec, *, llm, agent_runtime, message="分析群X最近7天", history=None,
                stream=False):
     graph = build_graph(spec, llm=llm, checkpointer=False,
@@ -218,6 +228,7 @@ async def _run(spec, *, llm, agent_runtime, message="分析群X最近7天", hist
     return final
 
 
+# 处理`anyio``backend`相关逻辑。
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
@@ -265,6 +276,7 @@ async def test_fetch_digest_with_failure_marker_routes_to_question(spec):
     assert "stats_summary" not in final["vars"]  # stats 未执行
 
 
+# 验证“获取`normal``digest`路由`stats`”场景下的预期行为。
 async def test_fetch_normal_digest_routes_to_stats(spec):
     digest = "【分段纪要】窗口 7 天；问题 3 条；讨论 5 条"
     captured: list[str] = []
@@ -278,6 +290,7 @@ async def test_fetch_normal_digest_routes_to_stats(spec):
     assert digest in stats_prompt  # digest 进入 stats 上下文
 
 
+# 验证“获取工具`failure``degrades``readable`回复”场景下的预期行为。
 async def test_fetch_tool_failure_degrades_to_readable_reply(spec):
     runtime = FakeAgentRuntime(error=RuntimeError("MCP tool call failed"))
     llm = ScriptedLLM({"请输出解析结果 JSON": PARSE_OK})
@@ -304,6 +317,7 @@ async def test_stats_prompt_carries_taxonomy_override(spec):
     assert final["vars"]["reply"]  # 报告生成（ScriptedLLM 兜底 "{}" -> text 节点输出）
 
 
+# 验证“`stats``failure``does`不`block`报告”场景下的预期行为。
 async def test_stats_failure_does_not_block_report(spec):
     digest = "【分段纪要】窗口 7 天"
     llm = ScriptedLLM({

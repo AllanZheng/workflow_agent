@@ -10,6 +10,7 @@ from flowagent.execution_service import _truncate_history, build_execution_app
 from tests.test_managed_config_v3 import _digest, _envelope as _v3_envelope
 
 
+# 处理`envelope`相关逻辑。
 def _envelope():
     snapshot = {
         "schema_version": 1,
@@ -44,6 +45,7 @@ def test_truncate_history_keeps_only_the_last_n_entries():
     assert _truncate_history(history, -1) == []
 
 
+# 验证“执行服务校验必需的内部Bearer 令牌”场景下的预期行为。
 def test_execution_service_requires_internal_bearer():
     client = TestClient(build_execution_app("secret-token"))
     assert client.post("/execution-v1/respond", json=_envelope()).status_code == 401
@@ -66,6 +68,7 @@ def test_execution_service_allows_all_requests_when_token_not_configured(caplog)
     assert denied.status_code == 200
 
 
+# 验证“执行服务报告`conservative`工作流能力”场景下的预期行为。
 def test_execution_service_reports_conservative_workflow_capabilities():
     client = TestClient(build_execution_app("secret-token"))
     denied = client.get("/capabilities")
@@ -81,9 +84,11 @@ def test_execution_service_reports_conservative_workflow_capabilities():
     assert payload["tools"]["managed_mcp"] is False
 
 
+# 验证“执行`app`打开PostgreSQL`saver``during``lifespan`”场景下的预期行为。
 def test_execution_app_opens_postgres_saver_during_lifespan(monkeypatch):
     saver = object()
 
+    # 处理`fake`打开PostgreSQL检查点存储相关逻辑。
     @asynccontextmanager
     async def fake_open_postgres_checkpointer():
         yield saver
@@ -101,6 +106,7 @@ def test_execution_app_defaults_checkpoint_to_disabled_without_env(monkeypatch):
     """评审问题 2：默认不再依赖 Postgres——未设置 FLOWAGENT_CHECKPOINT 时不建库连接。"""
     monkeypatch.delenv("FLOWAGENT_CHECKPOINT", raising=False)
 
+    # 标记失败`if``called`。
     def fail_if_called():
         raise AssertionError("checkpoint 默认关闭时不应尝试打开 Postgres 连接")
 
@@ -111,6 +117,7 @@ def test_execution_app_defaults_checkpoint_to_disabled_without_env(monkeypatch):
         assert app.state.checkpointer is None
 
 
+# 验证“执行服务接受`authenticated`重置不包含`checkpoint`状态”场景下的预期行为。
 def test_execution_service_accepts_authenticated_reset_without_checkpoint_state():
     response = TestClient(build_execution_app("secret-token")).post(
         "/execution-v1/reset",
@@ -160,11 +167,13 @@ def test_execution_service_v1v2_execution_times_out_via_workflow_timeout_ms(monk
     ).hexdigest()
 
     class SlowBoundLlm:
+        # 处理`ainvoke`相关逻辑。
         async def ainvoke(self, messages):
             await asyncio.sleep(3)
             return AIMessage(content="too late")
 
     class SlowLlm:
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools):
             return SlowBoundLlm()
 
@@ -178,6 +187,7 @@ def test_execution_service_v1v2_execution_times_out_via_workflow_timeout_ms(monk
     assert response.json()["error"]["code"] == "execution_timeout"
 
 
+# 验证“执行服务执行`managed``yaml`与`returns`回执”场景下的预期行为。
 def test_execution_service_executes_managed_yaml_and_returns_receipt():
     client = TestClient(build_execution_app("secret-token"))
     response = client.post(
@@ -191,6 +201,7 @@ def test_execution_service_executes_managed_yaml_and_returns_receipt():
     assert body["metadata"]["agent_config_applied"]["revision_id"] == "704b6209-30da-4e57-bf93-73c6867cc101"
 
 
+# 验证“执行服务拒绝`tampered`生成快照”场景下的预期行为。
 def test_execution_service_rejects_tampered_snapshot():
     payload = _envelope()
     payload["agent_config"]["snapshot"]["system_prompt"] = "tampered"
@@ -203,6 +214,7 @@ def test_execution_service_rejects_tampered_snapshot():
     assert response.json()["error"]["code"] == "config_digest_mismatch"
 
 
+# 验证“执行服务`wires`代理节点`demo`MCP”场景下的预期行为。
 def test_execution_service_wires_agent_node_to_demo_mcp(monkeypatch):
     payload = _envelope()
     snapshot = payload["agent_config"]["snapshot"]
@@ -229,14 +241,19 @@ nodes:
     captured = {}
 
     class FakeMcp:
+        # 初始化对象状态并建立所需依赖。
         def __init__(self, endpoint, token): captured.update(endpoint=endpoint, token=token)
+        # 列出工具。
         async def list_tools(self): return []
+        # 处理`call`工具相关逻辑。
         async def call_tool(self, name, arguments): raise AssertionError("unexpected tool call")
 
     class FakeBoundLlm:
+        # 处理`ainvoke`相关逻辑。
         async def ainvoke(self, messages): return AIMessage(content="agent-answer")
 
     class FakeLlm:
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools): captured["tools"] = tools; return FakeBoundLlm()
 
     monkeypatch.setattr(execution_service, "McpEdgeClient", FakeMcp)
@@ -256,6 +273,7 @@ nodes:
     }
 
 
+# 处理`v3`技能`envelope`相关逻辑。
 def _v3_skill_envelope():
     payload = _v3_envelope()
     snapshot = payload["agent_config"]["snapshot"]
@@ -274,6 +292,7 @@ def _v3_skill_envelope():
     return payload
 
 
+# 验证“`v3`模型授权判断是否`checked`之前`every`模型`call`与回执判断是否`versioned`”场景下的预期行为。
 def test_v3_model_authorization_is_checked_before_every_model_call_and_receipt_is_versioned(monkeypatch):
     from langchain_core.messages import AIMessage
 
@@ -282,11 +301,13 @@ def test_v3_model_authorization_is_checked_before_every_model_call_and_receipt_i
     body = "Refunds are allowed for 30 days."
 
     class Authorizer:
+        # 执行授权对应的流程。
         async def authorize(self, *, execution_id, model_version_id, generation):
             auth_calls.append((execution_id, model_version_id, generation))
             return object()
 
     class BoundLlm:
+        # 处理`ainvoke`相关逻辑。
         async def ainvoke(self, messages):
             model_calls.append(messages)
             if len(model_calls) == 1:
@@ -297,9 +318,11 @@ def test_v3_model_authorization_is_checked_before_every_model_call_and_receipt_i
             return AIMessage(content="Refunds are allowed for 30 days.")
 
     class Llm:
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools):
             return BoundLlm()
 
+    # 加载技能。
     async def load_skill(*, execution_id, generation, skill):
         assert generation == 4
         assert skill["body_version_id"] == "804b6209-30da-4e57-bf93-73c6867cc101"
@@ -334,6 +357,7 @@ def test_v3_model_authorization_is_checked_before_every_model_call_and_receipt_i
     assert "execution-token-secret" not in json.dumps(receipt)
 
 
+# 验证“`v3`模型授权`denial``prevents``any`模型请求”场景下的预期行为。
 def test_v3_model_authorization_denial_prevents_any_model_request(monkeypatch):
     from flowagent.execution_authorization import AuthorizationError
 
@@ -341,15 +365,18 @@ def test_v3_model_authorization_denial_prevents_any_model_request(monkeypatch):
     auth_calls = []
 
     class DenyingAuthorizer:
+        # 执行授权对应的流程。
         async def authorize(self, **kwargs):
             auth_calls.append(kwargs)
             raise AuthorizationError("model_authorization_denied")
 
     class Llm:
+        # 处理`ainvoke`相关逻辑。
         async def ainvoke(self, messages):
             model_calls.append(messages)
             raise AssertionError("model request must not be sent")
 
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools):
             return self
 
@@ -365,6 +392,7 @@ def test_v3_model_authorization_denial_prevents_any_model_request(monkeypatch):
     assert model_calls == []
 
 
+# 验证“`v3``injects`仅`platform`记忆上下文当生成快照启用已读”场景下的预期行为。
 def test_v3_injects_only_platform_memory_context_when_snapshot_enables_read(monkeypatch):
     from langchain_core.messages import AIMessage
 
@@ -383,14 +411,17 @@ def test_v3_injects_only_platform_memory_context_when_snapshot_enables_read(monk
     captured = {}
 
     class Llm:
+        # 处理`ainvoke`相关逻辑。
         async def ainvoke(self, messages):
             captured["messages"] = messages
             return AIMessage(content="brief answer")
 
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools):
             return self
 
     class Authorizer:
+        # 执行授权对应的流程。
         async def authorize(self, **kwargs):
             return object()
 
@@ -409,6 +440,7 @@ def test_v3_injects_only_platform_memory_context_when_snapshot_enables_read(monk
     assert "User prefers short answers." not in json.dumps(receipt)
 
 
+# 验证“`v3`拒绝记忆上下文当`frozen`策略禁用已读”场景下的预期行为。
 def test_v3_rejects_memory_context_when_frozen_policy_disables_read(monkeypatch):
     payload = _v3_envelope()
     payload["memory_context"] = {
@@ -418,14 +450,17 @@ def test_v3_rejects_memory_context_when_frozen_policy_disables_read(monkeypatch)
     model_calls = []
 
     class Llm:
+        # 处理`ainvoke`相关逻辑。
         async def ainvoke(self, messages):
             model_calls.append(messages)
             return AIMessage(content="should not run")
 
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools):
             return self
 
     class Authorizer:
+        # 执行授权对应的流程。
         async def authorize(self, **kwargs):
             return object()
 

@@ -107,6 +107,7 @@ class ToolInputError(ValueError):
     code = "invalid_arguments"
 
 
+# 校验必需的`str`。
 def _require_str(arguments: dict[str, Any], key: str) -> str:
     value = arguments.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -212,6 +213,7 @@ async def fetch_group_messages(
     if not isinstance(conversation_id, int) or conversation_id <= 0:
         raise ToolInputError("conversation_id 必须为正整数")
 
+    # 处理`int``arg`相关逻辑。
     def _int_arg(key: str, default: int, low: int, high: int) -> int:
         value = arguments.get(key, default)
         if value is None:
@@ -297,6 +299,7 @@ async def fetch_group_messages(
     }
 
 
+# 获取群组`analysis`输入。
 async def fetch_group_analysis_input(
     im: ImClient, arguments: dict[str, Any], *, settings: Settings
 ) -> dict[str, Any]:

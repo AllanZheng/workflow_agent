@@ -10,12 +10,14 @@ import flowagent.execution_service as execution_service
 from flowagent.execution_service import build_execution_app
 
 
+# 处理`digest`相关逻辑。
 def _digest(snapshot):
     return hashlib.sha256(json.dumps(
         snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode()).hexdigest()
 
 
+# 处理`envelope`相关逻辑。
 def _envelope(yaml_text, *, history=None):
     snapshot = {
         "schema_version": 1,
@@ -51,6 +53,7 @@ nodes:
 """
 
 
+# 验证“执行流式处理发出模板`delta``matching``done`”场景下的预期行为。
 def test_execution_stream_emits_template_delta_matching_done():
     yaml_text = """workflow:
   name: stream-template-only
@@ -63,6 +66,7 @@ nodes:
     next: END
 """
 
+    # 执行收集对应的流程。
     async def collect():
         return [event async for event in execution_service.stream_managed(
             execution_service.ExecutionRequest.model_validate(_envelope(yaml_text)),
@@ -82,9 +86,11 @@ def test_execution_stream_emits_model_delta_before_terminal_signal(monkeypatch):
     finished = asyncio.Event()
 
     class FakeMcp:
+        # 列出工具。
         async def list_tools(self): return []
 
     class FakeBoundModel:
+        # 处理`astream`相关逻辑。
         async def astream(self, messages):
             yield AIMessageChunk(content="early ")
             saw_first_chunk.set()
@@ -93,14 +99,17 @@ def test_execution_stream_emits_model_delta_before_terminal_signal(monkeypatch):
             finished.set()
 
     class FakeLlm:
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools): return FakeBoundModel()
 
     monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
     monkeypatch.setattr(execution_service, "McpEdgeClient", lambda endpoint, token: FakeMcp())
 
+    # 处理`exercise`相关逻辑。
     async def exercise():
         events = []
 
+        # 执行消费对应的流程。
         async def consume():
             async for event in execution_service.stream_managed(
                 execution_service.ExecutionRequest.model_validate(_envelope(_AGENT_YAML)), "mcp-token"
@@ -127,6 +136,7 @@ def test_execution_stream_emits_model_delta_before_terminal_signal(monkeypatch):
     assert events[-1]["metadata"]["agent_config_applied"]["config_digest"] == _envelope(_AGENT_YAML)["agent_config"]["config_digest"]
 
 
+# 验证“执行流式处理`uses`历史记录与仅流式处理`terminal`回复”场景下的预期行为。
 def test_execution_stream_uses_history_and_only_streams_terminal_reply(monkeypatch):
     yaml_text = """workflow:
   name: stream-final-only
@@ -146,19 +156,23 @@ nodes:
     captured = {}
 
     class FakeMcp:
+        # 列出工具。
         async def list_tools(self): return []
 
     class FakeBoundModel:
+        # 处理`astream`相关逻辑。
         async def astream(self, messages):
             captured["messages"] = messages
             yield AIMessageChunk(content="final")
 
     class FakeLlm:
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools): return FakeBoundModel()
 
     monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
     monkeypatch.setattr(execution_service, "McpEdgeClient", lambda endpoint, token: FakeMcp())
 
+    # 执行收集对应的流程。
     async def collect():
         return [event async for event in execution_service.stream_managed(
             execution_service.ExecutionRequest.model_validate(_envelope(
@@ -178,10 +192,12 @@ nodes:
     ]
 
 
+# 验证“执行流式处理接口认证与异常`have``sse``terminal`”场景下的预期行为。
 def test_execution_stream_endpoint_auth_and_exception_have_sse_terminal(monkeypatch):
     client = TestClient(build_execution_app("secret-token"))
     assert client.post("/execution-v1/respond/stream", json=_envelope(_AGENT_YAML)).status_code == 401
 
+    # 处理`broken`请求大语言模型相关逻辑。
     def broken_request_llm(*args, **kwargs):
         raise RuntimeError("model unavailable")
 
@@ -202,6 +218,7 @@ def test_execution_stream_config_error_gets_same_code_as_respond_path(monkeypatc
     压扁成笼统的 execution_failed（评审 §7.2 记录的现状不一致，本次修复）。"""
     from flowagent.errors import ConfigError
 
+    # 处理`broken`请求大语言模型相关逻辑。
     def broken_request_llm(*args, **kwargs):
         raise ConfigError("managed_model_config_missing")
 
@@ -224,20 +241,24 @@ def test_execution_stream_runs_pure_text_agent_without_mcp(monkeypatch):
     captured = {}
 
     class FakeBoundModel:
+        # 处理`astream`相关逻辑。
         async def astream(self, messages):
             yield AIMessageChunk(content="plain reply")
 
     class FakeLlm:
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools):
             captured["tools"] = tools
             return FakeBoundModel()
 
+    # 处理`unexpected`MCP相关逻辑。
     def unexpected_mcp(*args, **kwargs):
         raise AssertionError("pure text execution must not construct an MCP client")
 
     monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
     monkeypatch.setattr(execution_service, "McpEdgeClient", unexpected_mcp)
 
+    # 执行收集对应的流程。
     async def collect():
         request = execution_service.ExecutionRequest.model_validate(payload)
         return [event async for event in execution_service.stream_managed(request)]
@@ -253,10 +274,12 @@ def test_execution_stream_refuses_partial_mcp_configuration(monkeypatch):
     payload = _envelope(_AGENT_YAML)
 
     class FakeLlm:
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools): raise AssertionError("must fail before model bind")
 
     monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
 
+    # 执行消费对应的流程。
     async def consume():
         stream = execution_service.stream_managed(
             execution_service.ExecutionRequest.model_validate(payload)
@@ -279,15 +302,18 @@ def test_execution_stream_stops_with_error_after_visible_delta(monkeypatch):
     calls = []
 
     class FakeMcp:
+        # 列出工具。
         async def list_tools(self): return []
 
     class FakeBoundModel:
+        # 处理`astream`相关逻辑。
         async def astream(self, messages):
             calls.append("attempt")
             yield AIMessageChunk(content="abandoned")
             raise RuntimeError("upstream dropped")
 
     class FakeLlm:
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools): return FakeBoundModel()
 
     monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
@@ -328,6 +354,7 @@ nodes:
     payload = _envelope(yaml_text)
 
     class FakeLlm:
+        # 处理`astream`相关逻辑。
         async def astream(self, messages):
             yield AIMessageChunk(content="abandoned partial")
             raise RuntimeError("upstream dropped")
@@ -358,6 +385,7 @@ nodes:
 """
 
     class FakeLlm:
+        # 处理`astream`相关逻辑。
         async def astream(self, messages):
             yield AIMessageChunk(content="  hello")
             yield AIMessageChunk(content=" world  ")
@@ -389,6 +417,7 @@ nodes:
     attempts = []
 
     class FakeLlm:
+        # 处理`astream`相关逻辑。
         async def astream(self, messages):
             attempts.append(1)
             if len(attempts) == 1:
@@ -422,6 +451,7 @@ nodes:
     closed = asyncio.Event()
 
     class FakeLlm:
+        # 处理`astream`相关逻辑。
         async def astream(self, messages):
             try:
                 await asyncio.sleep(0.05)
@@ -445,6 +475,7 @@ def test_execution_stream_agent_timeout_cancels_model_and_errors(monkeypatch):
     closed = asyncio.Event()
 
     class FakeBoundModel:
+        # 处理`astream`相关逻辑。
         async def astream(self, messages):
             try:
                 await asyncio.sleep(0.05)
@@ -453,6 +484,7 @@ def test_execution_stream_agent_timeout_cancels_model_and_errors(monkeypatch):
                 closed.set()
 
     class FakeLlm:
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools): return FakeBoundModel()
 
     monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
@@ -467,6 +499,7 @@ def test_execution_stream_agent_timeout_cancels_model_and_errors(monkeypatch):
     assert closed.is_set()
 
 
+# 验证“执行请求`validation``never``reflects`模型API密钥”场景下的预期行为。
 def test_execution_request_validation_never_reflects_model_api_key():
     payload = _envelope(_AGENT_YAML)
     payload["agent_config"]["model_api_key"] = {"malicious": "do-not-reflect-this-value"}
@@ -485,9 +518,11 @@ def test_execution_stream_cancellation_propagates_and_closes_model_stream(monkey
     closed = asyncio.Event()
 
     class FakeMcp:
+        # 列出工具。
         async def list_tools(self): return []
 
     class FakeBoundModel:
+        # 处理`astream`相关逻辑。
         async def astream(self, messages):
             try:
                 yield AIMessageChunk(content="first")
@@ -496,12 +531,15 @@ def test_execution_stream_cancellation_propagates_and_closes_model_stream(monkey
                 closed.set()
 
     class FakeLlm:
+        # 处理`bind`工具相关逻辑。
         def bind_tools(self, tools): return FakeBoundModel()
 
     monkeypatch.setattr(execution_service, "_request_llm", lambda spec, config: FakeLlm())
     monkeypatch.setattr(execution_service, "McpEdgeClient", lambda endpoint, token: FakeMcp())
 
+    # 取消`consumer`。
     async def cancel_consumer():
+        # 执行消费对应的流程。
         async def consume():
             async for event in execution_service.stream_managed(
                 execution_service.ExecutionRequest.model_validate(payload), "mcp-token"

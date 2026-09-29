@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from flowagent import MockLLM, WorkflowEngine, load_spec_file
 
 
+# 解析入口参数并启动主流程。
 def main() -> None:
     # Windows 管道输出默认 GBK，重配为 UTF-8（与 CLI 同款），避免下游按 UTF-8 读取时解码失败
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):

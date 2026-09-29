@@ -6,6 +6,7 @@ from flowagent.execution_service import ManagedAgentConfig, _request_llm
 from flowagent.managed_config import load_managed_spec
 
 
+# 生成当前状态的快照。
 def _snapshot(yaml_text):
     from uuid import uuid5, NAMESPACE_URL
     return {
@@ -26,6 +27,7 @@ def _snapshot(yaml_text):
     }
 
 
+# 验证“风险咨询`managed`工作流判断是否模型仅与`does`不修改群组`mode`”场景下的预期行为。
 def test_risk_consultation_managed_workflow_is_model_only_and_does_not_change_group_mode():
     from pathlib import Path
 
@@ -38,6 +40,7 @@ def test_risk_consultation_managed_workflow_is_model_only_and_does_not_change_gr
     assert spec.nodes["generate"].output_key == "reply"
 
 
+# 验证“风险咨询提供方密钥判断是否已读来自`flowagent`环境”场景下的预期行为。
 def test_risk_consultation_provider_key_is_read_from_flowagent_environment(monkeypatch):
     import yaml
 
@@ -50,6 +53,7 @@ def test_risk_consultation_provider_key_is_read_from_flowagent_environment(monke
     class Model:
         pass
 
+    # 构建模型。
     def build_model(**kwargs):
         captured.update(kwargs)
         return Model()
@@ -72,6 +76,7 @@ def test_risk_consultation_provider_key_is_read_from_flowagent_environment(monke
     assert config.model_api_key is None
 
 
+# 验证“`non`咨询工作流`cannot``use`咨询服务凭据”场景下的预期行为。
 def test_non_consultation_workflow_cannot_use_consultation_service_credential(monkeypatch):
     from flowagent.errors import ConfigError
 
@@ -113,6 +118,7 @@ def test_flowagent_model_credentials_env_extends_the_default_binding_table(monke
     class Model:
         pass
 
+    # 构建模型。
     def build_model(**kwargs):
         captured.update(kwargs)
         return Model()

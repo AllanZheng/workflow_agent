@@ -41,6 +41,7 @@ CONFIG_PATH = os.getenv("FLOWAGENT_CONFIG", str(_DEFAULT_CONFIG))
 _ENGINE = None
 
 
+# 处理`lifespan`相关逻辑。
 @asynccontextmanager
 async def lifespan(app):
     global _ENGINE
@@ -52,6 +53,7 @@ async def lifespan(app):
             _ENGINE = None
 
 
+# 获取`engine`。
 def get_engine() -> WorkflowEngine:
     if _ENGINE is None:
         raise RuntimeError("API lifespan 尚未启动")
@@ -117,6 +119,7 @@ def create_run(body: RunIn):
     return _result(final, thread_id)
 
 
+# 获取运行。
 @app.get("/runs/{thread_id}", responses=_RESPONSES)
 def get_run(thread_id: str):
     snapshot = get_engine().get_state(thread_id)
@@ -139,6 +142,7 @@ def get_run(thread_id: str):
     }
 
 
+# 处理`resume`运行相关逻辑。
 @app.post("/runs/{thread_id}/resume", responses=_RESPONSES)
 def resume_run(thread_id: str, body: ResumeIn):
     engine = get_engine()
@@ -154,6 +158,7 @@ def resume_run(thread_id: str, body: ResumeIn):
     return _result(final, thread_id)
 
 
+# 处理健康状态相关逻辑。
 @app.get("/health")
 def health():
     return {"ok": True, "config": CONFIG_PATH}

@@ -28,6 +28,7 @@ from .router import make_router
 from .state import WFState
 
 
+# 打开PostgreSQL检查点存储。
 @asynccontextmanager
 async def open_postgres_checkpointer(dsn: str | None = None) -> AsyncIterator[object]:
     """Open and initialize the async PostgreSQL saver for one app lifespan.
@@ -86,6 +87,7 @@ def make_checkpointer(setting: str | None = None):
     raise ConfigError(f"未知 FLOWAGENT_CHECKPOINT 配置: {setting}（可选 memory/postgres）")
 
 
+# 执行解析对应的流程。
 def _resolve(target: str):
     return END if target == "END" else target
 
@@ -94,6 +96,7 @@ def _route_path_map(route: RouteConfig, error_goto: str | None = None) -> dict:
     """条件边所有可能的返回值 -> 节点名映射（LangGraph 用它做静态校验）。"""
     mapping: dict = {}
 
+    # 执行添加对应的流程。
     def add(target: str | None):
         if target:
             mapping[target] = _resolve(target)
@@ -112,6 +115,7 @@ def _fixed_or_error(node_name: str, normal_targets, error_goto: str):
 
     返回值保持原类型（列表 = 并行扇出），错误时改道单个 goto 目标。
     """
+    # 处理`router`相关逻辑。
     def router(state: dict):
         err = state.get("error")
         if err and err.get("node") == node_name:
@@ -178,6 +182,7 @@ def build_graph(spec: WorkflowSpec, llm=None, checkpointer=None, hooks=None, age
 class WorkflowEngine:
     """工作流引擎门面：编译一次，多次运行/恢复/流式。"""
 
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, spec: WorkflowSpec, llm=None, checkpointer=None, hooks=None):
         self.spec = spec
         self.llm = llm if llm is not None else create_llm()
@@ -196,9 +201,11 @@ class WorkflowEngine:
         if self._owns_checkpointer and hasattr(self.checkpointer, "close"):
             self.checkpointer.close()
 
+    # 进入上下文并准备所需资源。
     def __enter__(self):
         return self
 
+    # 退出上下文并释放所持资源。
     def __exit__(self, *exc):
         self.close()
 
@@ -215,6 +222,7 @@ class WorkflowEngine:
         """异步读取持久化状态。"""
         return await self.graph.aget_state(self._config(thread_id))
 
+    # 处理配置相关逻辑。
     def _config(self, thread_id: str) -> dict:
         return {
             "configurable": {"thread_id": thread_id},

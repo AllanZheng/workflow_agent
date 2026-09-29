@@ -4,6 +4,7 @@ from flowagent.errors import ConfigError
 from flowagent.managed_config import load_managed_spec
 
 
+# 处理`yaml`相关逻辑。
 def _yaml(node: str) -> str:
     return f"""
 workflow:
@@ -16,6 +17,7 @@ nodes:
 """
 
 
+# 验证“`managed`配置档案接受代理节点包含`bounded``iterations`”场景下的预期行为。
 def test_managed_profile_accepts_agent_node_with_bounded_iterations():
     spec = load_managed_spec(_yaml("""    type: agent
     output_key: reply
@@ -26,6 +28,7 @@ def test_managed_profile_accepts_agent_node_with_bounded_iterations():
     assert spec.nodes["main"].max_tool_iterations == 8
 
 
+# 验证“`managed`配置档案拒绝`local`执行节点”场景下的预期行为。
 @pytest.mark.parametrize("node", [
     "    type: human\n    message: approve?\n    next: END",
     "    type: tool\n    tool: flowagent.tools:bump_counter\n    next: END",
@@ -36,6 +39,7 @@ def test_managed_profile_rejects_local_execution_nodes(node):
         load_managed_spec(_yaml(node))
 
 
+# 验证“`managed`配置档案拒绝`more``than``eight`工具`iterations`”场景下的预期行为。
 def test_managed_profile_rejects_more_than_eight_tool_iterations():
     with pytest.raises(ConfigError):
         load_managed_spec(_yaml("""    type: agent

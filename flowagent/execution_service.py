@@ -216,6 +216,7 @@ class ManagedAgentConfig(StrictModel):
     execution_token: SecretStr | None = Field(default=None, repr=False)
     _snapshot_v3: ManagedSnapshotV3 | None = PrivateAttr(default=None)
 
+    # 校验`raw``v3`生成快照。
     @field_validator("snapshot", mode="before")
     @classmethod
     def _validate_raw_v3_snapshot(cls, value, info):
@@ -230,6 +231,7 @@ class ManagedAgentConfig(StrictModel):
                 raise ValueError(str(exc)) from exc
         return value
 
+    # 校验授权URL 地址。
     @field_validator("model_authorization_url")
     @classmethod
     def _validate_authorization_url(cls, value: str | None) -> str | None:
@@ -244,6 +246,7 @@ class ManagedAgentConfig(StrictModel):
             raise ValueError("model authorization URL is invalid")
         return value
 
+    # 校验生成快照契约。
     @model_validator(mode="after")
     def _validate_snapshot_contract(self):
         if isinstance(self.snapshot, ManagedSnapshotV3):
@@ -258,10 +261,12 @@ class ManagedAgentConfig(StrictModel):
                 raise ValueError("V3 execution-scoped MCP configuration is required")
         return self
 
+    # 生成快照数据。
     @property
     def snapshot_data(self) -> dict[str, Any]:
         return self.snapshot.model_dump(mode="json", exclude_unset=True)
 
+    # 生成快照`v3`。
     @property
     def snapshot_v3(self) -> ManagedSnapshotV3 | None:
         return self._snapshot_v3
@@ -292,6 +297,7 @@ class ExecutionRequest(StrictModel):
     unified_runtime_injection: None = None
     agent_config: ManagedAgentConfig
 
+    # 校验`v3`执行权限范围。
     @model_validator(mode="after")
     def _validate_v3_execution_scope(self):
         if self.agent_config.snapshot_v3 is not None:
@@ -305,6 +311,7 @@ class ExecutionRequest(StrictModel):
         return self
 
 
+# 处理`digest`相关逻辑。
 def _digest(snapshot: dict[str, Any]) -> str:
     encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True,
                          separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -336,6 +343,7 @@ def _execution_deadline_seconds(snapshot: dict) -> float:
     return timeout_ms / 1000
 
 
+# 处理请求大语言模型相关逻辑。
 def _request_llm(spec, config: ManagedAgentConfig):
     if config.snapshot_v3 is not None:
         model = config.snapshot_v3.model
@@ -373,6 +381,7 @@ def _request_llm(spec, config: ManagedAgentConfig):
     )
 
 
+# 处理`managed``system`提示词相关逻辑。
 def _managed_system_prompt(
     snapshot: dict[str, Any], memory_context: MemoryContextV1 | None = None,
 ) -> str:
@@ -397,6 +406,7 @@ def _managed_system_prompt(
     return "\n\n".join(section for section in sections if section)
 
 
+# 处理包含`analysis`目标相关逻辑。
 def _with_analysis_target(system_prompt: str, target: GroupAnalysisTarget | None) -> str:
     if target is None:
         return system_prompt
@@ -409,6 +419,7 @@ def _with_analysis_target(system_prompt: str, target: GroupAnalysisTarget | None
     return f"{system_prompt}\n\n{context}" if system_prompt else context
 
 
+# 处理MCP客户端针对执行相关逻辑。
 def _mcp_client_for_execution(config: ManagedAgentConfig, legacy_workload_token: str):
     if not config.mcp_endpoint:
         return None
@@ -423,6 +434,7 @@ def _mcp_client_for_execution(config: ManagedAgentConfig, legacy_workload_token:
     return McpEdgeClient(str(config.mcp_endpoint), token)
 
 
+# 执行`managed`。
 async def execute_managed(
     request: ExecutionRequest,
     mcp_workload_token: str = "",
@@ -507,6 +519,7 @@ async def execute_managed(
     }
 
 
+# 执行`managed``v3`。
 async def _execute_managed_v3(
     request: ExecutionRequest, *, model_authorizer: ModelAuthorizer | None,
     skill_loader: Callable[..., Any] | None,
@@ -572,6 +585,7 @@ async def _execute_managed_v3(
     }
 
 
+# 处理回执相关逻辑。
 def _receipt(config: ManagedAgentConfig, loaded_skills: list[dict] | None = None, *,
              execution_id: str | None = None, usage=None,
              memory_context_status: str = "unavailable") -> dict[str, Any]:
@@ -608,6 +622,7 @@ def _receipt(config: ManagedAgentConfig, loaded_skills: list[dict] | None = None
     }
 
 
+# 处理`reachable`节点相关逻辑。
 def _reachable_nodes(spec) -> set[str]:
     reachable: set[str] = set()
     pending = [spec.workflow.start]
@@ -795,6 +810,7 @@ async def stream_managed(
     }
 
 
+# 构建执行`app`。
 def build_execution_app(
     internal_token: str, mcp_workload_token: str = "", *,
     model_authorizer: ModelAuthorizer | None = None,
@@ -808,6 +824,7 @@ def build_execution_app(
     # 显式设置 FLOWAGENT_CHECKPOINT=postgres 仍可按需开启。
     checkpoint_mode = (os.getenv("FLOWAGENT_CHECKPOINT") or "disabled").strip().lower()
 
+    # 处理`lifespan`相关逻辑。
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if checkpoint_mode == "postgres":
@@ -826,6 +843,7 @@ def build_execution_app(
     app = FastAPI(title="FlowAgent execution-v1", lifespan=lifespan)
     app.add_middleware(RequestIdMiddleware)
 
+    # 处理能力相关逻辑。
     @app.get("/capabilities")
     async def capabilities(request: Request):
         authorization = request.headers.get("authorization", "")
@@ -846,6 +864,7 @@ def build_execution_app(
             "applied_config_fields": ["workflow.yaml", "system_prompt", "skills"],
         }
 
+    # 处理能力`v2`相关逻辑。
     @app.get("/capabilities/v2")
     async def capabilities_v2(request: Request):
         authorization = request.headers.get("authorization", "")
@@ -874,10 +893,12 @@ def build_execution_app(
         )
         return capabilities.model_dump(mode="json")
 
+    # 处理健康状态相关逻辑。
     @app.get("/health")
     async def health():
         return {"ok": True}
 
+    # 执行响应对应的流程。
     @app.post("/execution-v1/respond")
     async def respond(request: Request):
         authorization = request.headers.get("authorization", "")
@@ -904,6 +925,7 @@ def build_execution_app(
             error = classify_exception(exc)
             return JSONResponse(status_code=error.http_status, content=error_response_body(error))
 
+    # 响应流式处理。
     @app.post("/execution-v1/respond/stream")
     async def respond_stream(request: Request):
         authorization = request.headers.get("authorization", "")
@@ -914,6 +936,7 @@ def build_execution_app(
         except ValueError:
             return _invalid_request_response()
 
+        # 处理事件相关逻辑。
         async def events():
             emitted = 0
             try:
@@ -940,6 +963,7 @@ def build_execution_app(
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
+    # 执行重置对应的流程。
     @app.post("/execution-v1/reset")
     async def reset(request: Request):
         authorization = request.headers.get("authorization", "")

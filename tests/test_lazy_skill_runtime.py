@@ -11,26 +11,31 @@ from flowagent.skill_runtime import DemoSkillBodyLoader, SkillLoadError
 
 
 class _Model:
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, script, calls):
         self.script = script
         self.calls = calls
 
+    # 处理`ainvoke`相关逻辑。
     async def ainvoke(self, messages):
         self.calls.append(list(messages))
         return self.script.pop(0)
 
 
 class _LLM:
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, script):
         self.script = script
         self.calls = []
 
+    # 处理`bind`工具相关逻辑。
     def bind_tools(self, schemas):
         self.schemas = schemas
         return _Model(self.script, self.calls)
 
 
 class _McpClient:
+    # 列出工具。
     async def list_tools(self):
         return [{
             "name": "platform_load_skill",
@@ -38,6 +43,7 @@ class _McpClient:
             "input_schema": {"type": "object"},
         }]
 
+    # 处理`call`工具相关逻辑。
     async def call_tool(self, name, arguments):
         assert name == "platform_load_skill"
         assert arguments == {"skill_key": "order-helper"}
@@ -51,6 +57,7 @@ class _McpClient:
         }}
 
 
+# 验证“`v2`提示词检查是否包含摘要仅与模型接收内容体之后工具消息”场景下的预期行为。
 def test_v2_prompt_has_summary_only_and_model_receives_body_after_tool_message():
     snapshot = {
         "schema_version": 2,
@@ -93,6 +100,7 @@ def test_v2_prompt_has_summary_only_and_model_receives_body_after_tool_message()
     }]
 
 
+# 验证“`v2`提示词接收记忆上下文`as``separate``platform``section`”场景下的预期行为。
 def test_v2_prompt_receives_memory_context_as_a_separate_platform_section():
     prompt = _managed_system_prompt(
         {"schema_version": 2, "system_prompt": "Follow policy."},
@@ -105,6 +113,7 @@ def test_v2_prompt_receives_memory_context_as_a_separate_platform_section():
     assert "Use the user's preferred date format." in prompt
 
 
+# 验证“`v2`技能`loader`校验必需的`reachable`代理节点”场景下的预期行为。
 def test_v2_skill_loader_requires_a_reachable_agent_node():
     from flowagent.execution_service import (
         ExecutionRequest, ManagedAgentConfig, _digest, execute_managed,
@@ -153,30 +162,36 @@ BODY_HASH = hashlib.sha256(BODY.encode("utf-8")).hexdigest()
 
 
 class FakeMcp:
+    # 列出工具。
     async def list_tools(self):
         return []
 
 
 class FakeModel:
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, responses, captured):
         self.responses = iter(responses)
         self.captured = captured
 
+    # 处理`ainvoke`相关逻辑。
     async def ainvoke(self, messages):
         self.captured.append(list(messages))
         return next(self.responses)
 
 
 class FakeLlm:
+    # 初始化对象状态并建立所需依赖。
     def __init__(self, responses, captured):
         self.model = FakeModel(responses, captured)
         self.tools = None
 
+    # 处理`bind`工具相关逻辑。
     def bind_tools(self, tools):
         self.tools = tools
         return self.model
 
 
+# 验证“技能内容体判断是否`loaded`仅启用模型请求与`uses``pinned`版本”场景下的预期行为。
 def test_skill_body_is_loaded_only_on_model_request_and_uses_pinned_versions():
     captured = []
     loaded = []
@@ -187,6 +202,7 @@ def test_skill_body_is_loaded_only_on_model_request_and_uses_pinned_versions():
         AIMessage(content="refund answer"),
     ], captured)
 
+    # 加载技能。
     async def load_skill(*, execution_id, generation, skill):
         loaded.append((execution_id, generation, skill["metadata_version_id"], skill["body_version_id"]))
         return BODY
@@ -217,12 +233,14 @@ def test_skill_body_is_loaded_only_on_model_request_and_uses_pinned_versions():
     }]
 
 
+# 验证“技能`loader``cannot`解析技能`outside`生成快照”场景下的预期行为。
 def test_skill_loader_cannot_resolve_a_skill_outside_the_snapshot():
     llm = FakeLlm([AIMessage(content="", tool_calls=[{
         "id": "load-2", "name": "load_skill", "args": {"skill_id": "unknown"},
     }]), AIMessage(content="I can answer without that Skill.")], [])
     loaded = []
 
+    # 加载技能。
     async def load_skill(**kwargs):
         loaded.append(kwargs)
         return "must not load"
@@ -236,6 +254,7 @@ def test_skill_loader_cannot_resolve_a_skill_outside_the_snapshot():
     assert loaded == []
 
 
+# 验证“`pinned`技能加载`failure`判断是否安全与模型判断是否可以`answer`不包含`it`”场景下的预期行为。
 def test_pinned_skill_load_failure_is_safe_and_model_can_answer_without_it():
     captured = []
     llm = FakeLlm([
@@ -245,6 +264,7 @@ def test_pinned_skill_load_failure_is_safe_and_model_can_answer_without_it():
         AIMessage(content="I cannot verify the refund policy."),
     ], captured)
 
+    # 处理`broken``loader`相关逻辑。
     async def broken_loader(**kwargs):
         raise RuntimeError("remote detail contains a secret")
 
@@ -264,9 +284,11 @@ def test_pinned_skill_load_failure_is_safe_and_model_can_answer_without_it():
     }]
 
 
+# 验证“`demo`技能`loader`请求`fixed`版本包含代次与校验回复”场景下的预期行为。
 def test_demo_skill_loader_requests_the_fixed_versions_with_generation_and_validates_reply():
     captured = {}
 
+    # 处理处理器相关逻辑。
     def handler(request):
         captured["url"] = str(request.url)
         captured["headers"] = dict(request.headers)
@@ -300,6 +322,7 @@ def test_demo_skill_loader_requests_the_fixed_versions_with_generation_and_valid
     )
 
 
+# 验证“`demo`技能`loader`拒绝内容体版本其他`than``pinned``one`”场景下的预期行为。
 def test_demo_skill_loader_rejects_a_body_version_other_than_the_pinned_one():
     loader = DemoSkillBodyLoader(
         "https://demo.test/internal/executions/904b6209-30da-4e57-bf93-73c6867cc101/model-authorization",
@@ -319,6 +342,7 @@ def test_demo_skill_loader_rejects_a_body_version_other_than_the_pinned_one():
         ))
 
 
+# 验证“`demo`技能`loader`规范化`line``endings`之前计算摘要检查”场景下的预期行为。
 def test_demo_skill_loader_normalizes_line_endings_before_hash_check():
     canonical_body = BODY + "\nBring your receipt."
     windows_body = canonical_body.replace("\n", "\r\n")
@@ -339,6 +363,7 @@ def test_demo_skill_loader_normalizes_line_endings_before_hash_check():
     )) == canonical_body
 
 
+# 验证“`demo`技能`loader`拒绝内容体计算摘要`mismatch`”场景下的预期行为。
 def test_demo_skill_loader_rejects_body_hash_mismatch():
     loader = DemoSkillBodyLoader(
         "https://demo.test/internal/executions/904b6209-30da-4e57-bf93-73c6867cc101/model-authorization",

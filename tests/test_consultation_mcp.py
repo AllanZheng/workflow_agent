@@ -10,6 +10,7 @@ from services.consultation_mcp.app import build_app
 from services.consultation_mcp.config import Settings
 
 
+# 处理配置项相关逻辑。
 def _settings():
     return Settings(
         im_base_url="http://im.internal", im_service_token="service-held",
@@ -18,6 +19,7 @@ def _settings():
     )
 
 
+# 处理会话相关逻辑。
 @asynccontextmanager
 async def _session(app, token="platform-worker"):
     async with app.router.lifespan_context(app):
@@ -35,9 +37,11 @@ async def _session(app, token="platform-worker"):
             await http.aclose()
 
 
+# 验证“咨询写入MCP`exposes`仅`scoped`发送工具与`forwards`幂等性”场景下的预期行为。
 def test_consultation_write_mcp_exposes_only_scoped_send_tool_and_forwards_idempotency():
     seen = []
 
+    # 处理`im`处理器相关逻辑。
     async def im_handler(request):
         seen.append(request)
         assert request.headers["authorization"] == "Bearer service-held"
@@ -51,6 +55,7 @@ def test_consultation_write_mcp_exposes_only_scoped_send_tool_and_forwards_idemp
         assert payload["message_type"] == "text"
         return httpx.Response(200, json={"data": {"id": 88}})
 
+    # 处理`exercise`相关逻辑。
     async def exercise():
         app = build_app(_settings(), transport=httpx.MockTransport(im_handler))
         async with _session(app) as session:
@@ -69,11 +74,13 @@ def test_consultation_write_mcp_exposes_only_scoped_send_tool_and_forwards_idemp
     assert len(seen) == 1
 
 
+# 验证“咨询写入MCP`denies``non``allowlisted`群组之前`im``call`”场景下的预期行为。
 def test_consultation_write_mcp_denies_non_allowlisted_group_before_im_call():
     calls = []
     app = build_app(_settings(), transport=httpx.MockTransport(
         lambda request: calls.append(request) or httpx.Response(200, json={"data": {"id": 1}})
     ))
+    # 处理`exercise`相关逻辑。
     async def exercise():
         async with _session(app) as session:
             return await session.call_tool("send_consultation_message", {
@@ -88,6 +95,7 @@ def test_consultation_write_mcp_denies_non_allowlisted_group_before_im_call():
     assert calls == []
 
 
+# 验证“咨询写入MCP校验必需的`platform``worker`Bearer 令牌”场景下的预期行为。
 def test_consultation_write_mcp_requires_platform_worker_bearer():
     app = build_app(_settings())
     with TestClient(app) as client:
@@ -96,12 +104,15 @@ def test_consultation_write_mcp_requires_platform_worker_bearer():
     assert response.json() == {"error": {"code": "unauthorized"}}
 
 
+# 验证“咨询文件消息`forwards`附件与拒绝无效标识集合”场景下的预期行为。
 def test_consultation_file_message_forwards_attachment_and_rejects_invalid_ids():
     import json
     calls = []
+    # 处理处理器相关逻辑。
     async def handler(request):
         calls.append(json.loads(request.content))
         return httpx.Response(200, json={"data": {"id": 90}})
+    # 处理`exercise`相关逻辑。
     async def exercise():
         app = build_app(_settings(), transport=httpx.MockTransport(handler))
         async with _session(app) as session:

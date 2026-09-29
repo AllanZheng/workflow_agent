@@ -14,6 +14,7 @@ from flowagent.execution_service import (
 )
 
 
+# 处理`digest`相关逻辑。
 def _digest(snapshot):
     content = {key: value for key, value in snapshot.items() if key != "config_digest"}
     return hashlib.sha256(json.dumps(
@@ -21,6 +22,7 @@ def _digest(snapshot):
     ).encode("utf-8")).hexdigest()
 
 
+# 生成当前状态的快照。
 def _snapshot():
     agent_id = "604b6209-30da-4e57-bf93-73c6867cc101"
     revision_id = "704b6209-30da-4e57-bf93-73c6867cc101"
@@ -76,6 +78,7 @@ def _snapshot():
     return snapshot
 
 
+# 处理`envelope`相关逻辑。
 def _envelope(snapshot=None):
     snapshot = snapshot or _snapshot()
     return {
@@ -101,6 +104,7 @@ def _envelope(snapshot=None):
     }
 
 
+# 验证“`v3`生成快照解析UUID 标识`references`与`verified``digest`”场景下的预期行为。
 def test_v3_snapshot_parses_uuid_references_and_verified_digest():
     request = ExecutionRequest.model_validate(_envelope())
 
@@ -112,6 +116,7 @@ def test_v3_snapshot_parses_uuid_references_and_verified_digest():
     )
 
 
+# 验证“`v3`生成快照拒绝`tampering``even`当`outer``digest`判断是否`unchanged`”场景下的预期行为。
 def test_v3_snapshot_rejects_tampering_even_when_outer_digest_is_unchanged():
     payload = _envelope()
     payload["agent_config"]["snapshot"]["model"]["parameters"]["temperature"] = 0.7
@@ -120,6 +125,7 @@ def test_v3_snapshot_rejects_tampering_even_when_outer_digest_is_unchanged():
         ExecutionRequest.model_validate(payload)
 
 
+# 验证“`v3`生成快照拒绝`non`UUID 标识`references`与`v2`结构”场景下的预期行为。
 def test_v3_snapshot_rejects_non_uuid_references_and_v2_schema():
     payload = _envelope()
     payload["agent_config"]["snapshot"]["runtime_id"] = "runtime-one"
@@ -136,6 +142,7 @@ def test_v3_snapshot_rejects_non_uuid_references_and_v2_schema():
         ExecutionRequest.model_validate(payload)
 
 
+# 验证“`v3`生成快照拒绝`reference``disagreement``between``sections`”场景下的预期行为。
 def test_v3_snapshot_rejects_reference_disagreement_between_sections():
     payload = _envelope()
     payload["agent_config"]["snapshot"]["model"]["version_id"] = "a14b6209-30da-4e57-bf93-73c6867cc101"
@@ -146,6 +153,7 @@ def test_v3_snapshot_rejects_reference_disagreement_between_sections():
         ExecutionRequest.model_validate(payload)
 
 
+# 验证“`v3`模型校验必需的执行`scoped`授权字段”场景下的预期行为。
 def test_v3_model_requires_execution_scoped_authorization_fields():
     payload = _envelope()
     payload["agent_config"].pop("model_authorization_url")
@@ -155,6 +163,7 @@ def test_v3_model_requires_execution_scoped_authorization_fields():
         ExecutionRequest.model_validate(payload)
 
 
+# 验证“群组`analysis`目标判断是否`added``v3``system`提示词”场景下的预期行为。
 def test_group_analysis_target_is_added_to_v3_system_prompt():
     prompt = _with_analysis_target(
         "Answer concisely.", GroupAnalysisTarget(conversation_id=6),
@@ -165,6 +174,7 @@ def test_group_analysis_target_is_added_to_v3_system_prompt():
     assert prompt.startswith("Answer concisely.")
 
 
+# 验证“能力`advertise``v3`UUID 标识`lazy`技能与授权契约”场景下的预期行为。
 def test_capabilities_advertise_v3_uuid_lazy_skill_and_authorization_contract():
     response = TestClient(build_execution_app("internal-token")).get(
         "/capabilities/v2", headers={"Authorization": "Bearer internal-token"},
