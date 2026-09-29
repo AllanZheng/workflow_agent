@@ -567,6 +567,7 @@ async def _execute_managed_v3(
         resolved_skill_loader = DemoSkillBodyLoader(
             str(config.model_authorization_url), config.execution_token.get_secret_value(),
             str(snapshot.runtime_id),
+            fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
         )
     runtime = ManagedAgentRuntime(
         llm, mcp_client, skills=[skill.model_dump(mode="json") for skill in snapshot.skills],
@@ -700,6 +701,7 @@ async def stream_managed(
             resolved_skill_loader = DemoSkillBodyLoader(
                 str(config.model_authorization_url), config.execution_token.get_secret_value(),
                 str(snapshot.runtime_id),
+                fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
             )
         runtime = ManagedAgentRuntime(
             llm, mcp_client, skills=[skill.model_dump(mode="json") for skill in snapshot.skills],

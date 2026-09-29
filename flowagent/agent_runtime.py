@@ -43,6 +43,7 @@ class ManagedAgentRuntime:
         if len(self._skills_by_id) != len(self.skills):
             raise ValueError("duplicate_skill_binding")
         self._loaded_skill_bodies: dict[str, str] = {}
+        self._dependency_checked_skills: set[str] = set()
 
     # 记录技能加载。
     # English: Record skill load.
@@ -128,7 +129,7 @@ class ManagedAgentRuntime:
         skill = self._skills_by_id.get(skill_id)
         if skill is None:
             raise ValueError("skill_not_bound")
-        if skill_id in self._loaded_skill_bodies:
+        if skill_id in self._loaded_skill_bodies and skill_id not in self._dependency_checked_skills:
             return self._loaded_skill_bodies[skill_id]
         if self.skill_loader is None:
             raise ValueError("skill_loader_unavailable")
@@ -158,13 +159,20 @@ class ManagedAgentRuntime:
         if isinstance(result, dict) and returned_body_hash != body_hash:
             raise ValueError("skill_body_hash_mismatch")
         self._loaded_skill_bodies[skill_id] = body
-        self.usage.loaded_skills.append({
+        source_body_hash = body_hash
+        if isinstance(result, dict) and result.get("requires_dependency_validation"):
+            self._dependency_checked_skills.add(skill_id)
+            source_body_hash = result["source_body_hash"]
+        record = {
             "skill_id": skill_id,
             "metadata_version_id": skill["metadata_version_id"],
             "body_version_id": skill["body_version_id"],
-            "body_hash": body_hash,
+            "body_hash": source_body_hash,
             "outcome": "success",
-        })
+        }
+        if source_body_hash != body_hash:
+            record["resolved_body_hash"] = body_hash
+        self.usage.loaded_skills.append(record)
         return body
 
     # 处理`call`工具相关逻辑。
