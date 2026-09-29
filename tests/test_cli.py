@@ -10,12 +10,14 @@ CS = "configs/customer_service.yaml"
 
 
 # 处理`cs`路径相关逻辑。
+# English: Handle cs path operations.
 @pytest.fixture
 def cs_path(project_root):
     return str(project_root / "configs" / "customer_service.yaml")
 
 
 # 验证“运行`success`”场景下的预期行为。
+# English: Verify run success.
 def test_run_success(cs_path, capsys):
     code = main(["run", cs_path, "--input", json.dumps({"ticket": "我要退款"}, ensure_ascii=False)])
     out = capsys.readouterr().out
@@ -25,6 +27,7 @@ def test_run_success(cs_path, capsys):
 
 
 # 验证“运行包含输入文件”场景下的预期行为。
+# English: Verify run with input file.
 def test_run_with_input_file(cs_path, tmp_path, capsys):
     f = tmp_path / "input.json"
     f.write_text(json.dumps({"ticket": "退款"}, ensure_ascii=False), encoding="utf-8")
@@ -34,6 +37,7 @@ def test_run_with_input_file(cs_path, tmp_path, capsys):
 
 
 # 验证“`show``prints``structure`与`mermaid`”场景下的预期行为。
+# English: Verify show prints structure and mermaid.
 def test_show_prints_structure_and_mermaid(cs_path, capsys):
     code = main(["show", cs_path])
     out = capsys.readouterr().out
@@ -44,6 +48,7 @@ def test_show_prints_structure_and_mermaid(cs_path, capsys):
 
 
 # 验证“缺失配置`returns`2”场景下的预期行为。
+# English: Verify missing config returns 2.
 def test_missing_config_returns_2(capsys):
     code = main(["run", "no/such/file.yaml"])
     assert code == 2
@@ -51,6 +56,7 @@ def test_missing_config_returns_2(capsys):
 
 
 # 验证“`bad`输入JSON`returns`2”场景下的预期行为。
+# English: Verify bad input JSON returns 2.
 def test_bad_input_json_returns_2(cs_path, capsys):
     code = main(["run", cs_path, "--input", "{broken json"])
     assert code == 2
@@ -58,12 +64,14 @@ def test_bad_input_json_returns_2(cs_path, capsys):
 
 
 # 验证“`non``object`输入`returns`2”场景下的预期行为。
+# English: Verify non object input returns 2.
 def test_non_object_input_returns_2(cs_path, capsys):
     code = main(["run", cs_path, "--input", "[1,2]"])
     assert code == 2
 
 
 # 验证“运行时`failure``returns`1”场景下的预期行为。
+# English: Verify runtime failure returns 1.
 def test_runtime_failure_returns_1(project_root, tmp_path, capsys):
     cfg = tmp_path / "boom.yaml"
     cfg.write_text(
@@ -86,6 +94,7 @@ def test_runtime_failure_returns_1(project_root, tmp_path, capsys):
 
 
 # 验证“错误`degrade``prints``warning`”场景下的预期行为。
+# English: Verify error degrade prints warning.
 def test_error_degrade_prints_warning(project_root, tmp_path, capsys):
     cfg = tmp_path / "degrade.yaml"
     cfg.write_text(
@@ -121,6 +130,7 @@ def test_error_degrade_prints_warning(project_root, tmp_path, capsys):
     assert "已按 on_error 降级" in out
 
 
+# English: Verify python dash m entry.
 def test_python_dash_m_entry(project_root):
     """`python -m flowagent` 入口（__main__.py）可执行。"""
     import subprocess
@@ -142,6 +152,7 @@ def test_python_dash_m_entry(project_root):
 # ---------------- v2 新命令 ----------------
 
 
+# English: Verify check valid config.
 def test_check_valid_config(project_root, capsys):
     cfg = str(project_root / "configs" / "approval.yaml")
     code = main(["check", cfg])
@@ -152,6 +163,7 @@ def test_check_valid_config(project_root, capsys):
 
 
 # 验证“检查无效配置”场景下的预期行为。
+# English: Verify check invalid config.
 def test_check_invalid_config(project_root, tmp_path, capsys):
     cfg = tmp_path / "bad.yaml"
     cfg.write_text("workflow: {name: x, start: ghost}\nnodes: {}\n", encoding="utf-8")
@@ -161,6 +173,7 @@ def test_check_invalid_config(project_root, tmp_path, capsys):
 
 
 # 验证“运行流式处理`prints``progressive`输出”场景下的预期行为。
+# English: Verify run stream prints progressive output.
 def test_run_stream_prints_progressive_output(project_root, capsys):
     cfg = str(project_root / "configs" / "customer_service.yaml")
     code = main(["run", cfg, "--stream", "--input", json.dumps({"ticket": "退款"})])
@@ -172,6 +185,7 @@ def test_run_stream_prints_progressive_output(project_root, capsys):
 
 
 # 验证“`show``bad`配置`returns`2”场景下的预期行为。
+# English: Verify show bad config returns 2.
 def test_show_bad_config_returns_2(project_root, capsys):
     code = main(["show", "no/such/file.yaml"])
     assert code == 2
@@ -179,12 +193,14 @@ def test_show_bad_config_returns_2(project_root, capsys):
 
 
 # 验证“`resume``bad`配置`returns`2”场景下的预期行为。
+# English: Verify resume bad config returns 2.
 def test_resume_bad_config_returns_2(project_root, capsys):
     code = main(["resume", "no/such/file.yaml", "--thread-id", "t", "--value", "x"])
     assert code == 2
     assert "配置错误" in capsys.readouterr().err
 
 
+# English: Verify run stream shows error degrade.
 def test_run_stream_shows_error_degrade(project_root, tmp_path, capsys):
     """流式模式下 on_error 降级应实时打印错误条目。"""
     cfg = tmp_path / "degrade_stream.yaml"
@@ -213,11 +229,13 @@ def test_run_stream_shows_error_degrade(project_root, tmp_path, capsys):
 
 
 # 处理包含PostgreSQL环境变量相关逻辑。
+# English: Handle with postgres env operations.
 def _with_postgres_env(db_path):
     import os
     from contextlib import contextmanager
 
     # 处理`ctx`相关逻辑。
+    # English: Handle ctx operations.
     @contextmanager
     def _ctx():
         keys = ("FLOWAGENT_CHECKPOINT", "FLOWAGENT_DATABASE_URL")
@@ -239,6 +257,7 @@ def _with_postgres_env(db_path):
 
 class TestResumeInProcess:
     # 验证“`resume`未知`thread`”场景下的预期行为。
+    # English: Verify resume unknown thread.
     def test_resume_unknown_thread(self, project_root, tmp_path, capsys):
         cfg = tmp_path / "ap.yaml"
         cfg.write_text(APPROVAL_YAML, encoding="utf-8")
@@ -248,6 +267,7 @@ class TestResumeInProcess:
         assert "未找到" in capsys.readouterr().err
 
     # 验证“`resume``completed``thread`”场景下的预期行为。
+    # English: Verify resume completed thread.
     def test_resume_completed_thread(self, project_root, tmp_path, capsys):
         cfg = tmp_path / "ap.yaml"
         cfg.write_text(APPROVAL_YAML, encoding="utf-8")
@@ -258,6 +278,7 @@ class TestResumeInProcess:
         assert code == 1
         assert "已结束" in capsys.readouterr().err
 
+    # English: Verify resume that raises flowagent error.
     def test_resume_that_raises_flowagent_error(self, project_root, tmp_path, capsys):
         """恢复后走到的节点抛业务异常（无 on_error）→ 退出码1。"""
         cfg = tmp_path / "boom_ap.yaml"
@@ -300,6 +321,7 @@ nodes:
 
 
 # 处理`subprocess`环境变量相关逻辑。
+# English: Handle subprocess env operations.
 def _subprocess_env(db_path):
     import os
 
@@ -313,6 +335,7 @@ def _subprocess_env(db_path):
 
 class TestHumanRoundtripCli:
     # 验证“`pause``then``resume``across``processes`”场景下的预期行为。
+    # English: Verify pause then resume across processes.
     def test_pause_then_resume_across_processes(self, project_root, tmp_path):
         import subprocess
         import sys
@@ -341,6 +364,7 @@ class TestHumanRoundtripCli:
         assert "decision = 批准" in r2.stdout
 
     # 验证“`resume`未知`thread``returns`1”场景下的预期行为。
+    # English: Verify resume unknown thread returns 1.
     def test_resume_unknown_thread_returns_1(self, project_root, tmp_path):
         import subprocess
         import sys
@@ -358,6 +382,7 @@ class TestHumanRoundtripCli:
         assert "未找到" in r.stderr
 
     # 验证“`resume``completed``thread``returns`1”场景下的预期行为。
+    # English: Verify resume completed thread returns 1.
     def test_resume_completed_thread_returns_1(self, project_root, tmp_path):
         import subprocess
         import sys
@@ -388,6 +413,7 @@ class TestHumanRoundtripCli:
         assert r.returncode == 1
         assert "已结束" in r.stderr
 
+    # English: Verify in process resume after pause.
     def test_in_process_resume_after_pause(self, project_root, tmp_path, capsys):
         """进程内同引擎暂停→恢复（postgres 不必需）。"""
         cfg = tmp_path / "ap.yaml"
@@ -414,6 +440,7 @@ class TestHumanRoundtripCli:
 
 
 # 验证“运行不包含PostgreSQL`dsn``returns`配置错误”场景下的预期行为。
+# English: Verify run without postgres dsn returns configuration error.
 def test_run_without_postgres_dsn_returns_configuration_error(tmp_path, monkeypatch, capsys):
     cfg = tmp_path / "approval.yaml"
     cfg.write_text(APPROVAL_YAML, encoding="utf-8")

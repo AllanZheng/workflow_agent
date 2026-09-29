@@ -48,6 +48,7 @@ class PublishConfigurationError(ValueError):
 
 
 # 读取必需配置值，并在缺失时停止后续处理。
+# English: Handle required operations.
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -56,11 +57,13 @@ def _required(name: str) -> str:
 
 
 # 读取并校验可选配置值。
+# English: Handle optional operations.
 def _optional(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip() or default
 
 
 # 将输入解析并校验为正整数。
+# English: Handle positive int operations.
 def _positive_int(name: str, default: int) -> int:
     try:
         result = int(_optional(name, str(default)))
@@ -72,6 +75,7 @@ def _positive_int(name: str, default: int) -> int:
 
 
 # 解析并校验 UUID 标识。
+# English: Handle UUID operations.
 def _uuid(name: str) -> uuid.UUID:
     try:
         return uuid.UUID(_required(name))
@@ -80,6 +84,7 @@ def _uuid(name: str) -> uuid.UUID:
 
 
 # 读取并校验主密钥配置。
+# English: Handle master key operations.
 def _master_key() -> bytes:
     try:
         key = base64.b64decode(_required("AGENT_CONFIG_MASTER_KEY_B64"), validate=True)
@@ -93,6 +98,7 @@ def _master_key() -> bytes:
 
 
 # 判断输入值是否为真。
+# English: Return whether true.
 def _is_true(name: str, default: bool) -> bool:
     raw = os.environ.get(name, "true" if default else "false").strip().lower()
     if raw in {"1", "true", "yes", "on"}:
@@ -102,6 +108,7 @@ def _is_true(name: str, default: bool) -> bool:
     raise PublishConfigurationError(f"{name} must be a boolean")
 
 
+# English: Handle encrypt operations.
 def _encrypt(key: bytes, credential_id: uuid.UUID, ctype: str,
              plaintext: str) -> tuple[bytes, bytes]:
     """Admin 凭据契约：AES-256-GCM，AAD = "<id>:<type>:<key_version>"。"""
@@ -111,6 +118,7 @@ def _encrypt(key: bytes, credential_id: uuid.UUID, ctype: str,
     return ciphertext, nonce
 
 
+# English: Handle workflow yaml operations.
 def _workflow_yaml() -> str:
     """受管工作流正文；先过受管门禁再入库（坏 YAML 拒绝发布）。"""
     path = Path(_optional("GROUP_ANALYSIS_YAML_PATH",
@@ -129,6 +137,7 @@ def _workflow_yaml() -> str:
 
 
 # 生成当前状态的快照。
+# English: Handle snapshot operations.
 def _snapshot(agent_id: uuid.UUID, model_credential_id: uuid.UUID,
               im_credential_id: uuid.UUID) -> dict:
     im_tools_url = _optional(
@@ -141,6 +150,7 @@ def _snapshot(agent_id: uuid.UUID, model_credential_id: uuid.UUID,
     server_id = _positive_int("GROUP_ANALYSIS_MCP_SERVER_ID", 0)
 
     # 处理MCP工具相关逻辑。
+    # English: Handle MCP tool operations.
     def mcp_tool(exposed: str, schema: dict, description: str, tool_id: int) -> dict:
         return {
             "tool_id": tool_id,
@@ -191,6 +201,7 @@ def _snapshot(agent_id: uuid.UUID, model_credential_id: uuid.UUID,
     }
 
 
+# English: Handle digest operations.
 def _digest(snapshot: dict) -> str:
     """与 flowagent execution-v1 的 config_digest 同一 JSON 规则。"""
     import hashlib
@@ -200,6 +211,7 @@ def _digest(snapshot: dict) -> str:
 
 
 # 发布数据并返回发布结果。
+# English: Publish the current operation.
 async def publish() -> tuple[uuid.UUID, uuid.UUID, bool]:
     # DB 依赖惰性导入：本仓库 venv 无 sqlalchemy，发布须在带该依赖的环境运行
     # （demo_platform venv / 部署容器均满足）；--dry-run 则完全不需要
@@ -336,6 +348,7 @@ async def publish() -> tuple[uuid.UUID, uuid.UUID, bool]:
 
 
 # 解析入口参数并启动主流程。
+# English: Run the main entry point.
 def main() -> int:
     # --dry-run：只构建快照并校验（受管门禁 + schema 同源 + digest），
     # 不触碰数据库、不需要 sqlalchemy —— 供 CI 与操作者预演

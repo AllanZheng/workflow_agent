@@ -38,6 +38,7 @@ class WindowError(ValueError):
     """时间窗非法。code 用于 MCP 错误码：window_invalid / window_too_large。"""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
@@ -49,10 +50,12 @@ class TimeWindow:
     end: datetime    # aware UTC，含端点
 
     # 处理`hours`相关逻辑。
+    # English: Handle hours operations.
     @property
     def hours(self) -> float:
         return (self.end - self.start).total_seconds() / 3600.0
 
+    # English: Handle segments total operations.
     def segments_total(self, segment_hours: int) -> int:
         """按段长切分的总段数（至少 1 段）。"""
         if segment_hours < 1:
@@ -64,6 +67,7 @@ class TimeWindow:
             total = int(-(-remaining // seg_seconds))  # 向上取整，避免浮点误差
         return total
 
+    # English: Handle segment bounds operations.
     def segment_bounds(self, segment_hours: int, index: int) -> tuple[datetime, datetime]:
         """第 index 段（从 0 计）的 [起, 止) 边界；末段止点为窗口 end（含）。"""
         total = self.segments_total(segment_hours)
@@ -77,6 +81,7 @@ class TimeWindow:
         return seg_start, seg_end
 
 
+# English: Parse year inferred.
 def _parse_year_inferred(month: int, day: int, now_local: datetime) -> datetime:
     """缺年日期 -> 距离现在最近的过去日期（今年已过用今年，否则用去年）。"""
     candidate = datetime(now_local.year, month, day)
@@ -85,6 +90,7 @@ def _parse_year_inferred(month: int, day: int, now_local: datetime) -> datetime:
     return candidate
 
 
+# English: Parse time token.
 def parse_time_token(token: str | None, *, now: datetime | None = None) -> datetime | None:
     """解析单个时间记号为 aware UTC datetime；None/空 -> None。
 
@@ -139,6 +145,7 @@ def parse_time_token(token: str | None, *, now: datetime | None = None) -> datet
     return base.replace(tzinfo=now_local.tzinfo).astimezone(timezone.utc)
 
 
+# English: Resolve window.
 def resolve_window(
     start: str | None,
     end: str | None,

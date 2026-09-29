@@ -10,6 +10,7 @@ from .errors import ConfigError, ToolError
 _DEFAULT_ALLOWED = ("flowagent.tools",)  # 默认白名单：仅内置工具模块
 
 
+# English: Check tool allowlist.
 def _check_tool_allowlist(module_name: str) -> None:
     """工具模块白名单：FLOWAGENT_TOOL_MODULES=前缀1,前缀2。
 
@@ -36,6 +37,7 @@ def _check_tool_allowlist(module_name: str) -> None:
 # ---- 内置工具（配置里通过 flowagent.tools:函数名 引用） ----
 
 
+# English: Handle knowledge base operations.
 def knowledge_base(query: str) -> str:
     """Mock 知识库检索：按关键词命中返回固定知识条目。"""
     kb = {
@@ -51,6 +53,7 @@ def knowledge_base(query: str) -> str:
     return "知识库未命中，建议转人工处理。"
 
 
+# English: Handle bump counter operations.
 def bump_counter(count=0) -> int:
     """计数器工具：用于演示/测试循环护栏。"""
     try:
@@ -59,12 +62,14 @@ def bump_counter(count=0) -> int:
         return 1
 
 
+# English: Handle slow tool operations.
 def slow_tool(seconds: float = 5) -> str:
     """慢工具：休眠指定秒数，用于验证节点超时控制。"""
     time.sleep(float(seconds))
     return f"slept {seconds}s"
 
 
+# English: Handle unreliable tool operations.
 def unreliable_tool(text: str) -> str:
     """演示用不稳定工具：输入含“触发故障”时抛异常，用于验证 on_error 降级。"""
     if "触发故障" in str(text):
@@ -75,6 +80,7 @@ def unreliable_tool(text: str) -> str:
 # ---- 工具加载 ----
 
 
+# English: Load tool.
 def load_tool(ref: str):
     """按 "module:function" 点分引用加载可调用工具（受白名单约束）。"""
     if ":" not in ref:

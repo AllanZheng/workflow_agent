@@ -9,6 +9,7 @@ from flowagent.llm import MockLLM
 
 
 # 重置`flaky`。
+# English: Reset flaky.
 @pytest.fixture(autouse=True)
 def _reset_flaky():
     flaky.reset()
@@ -16,6 +17,7 @@ def _reset_flaky():
 
 
 # 处理`engine`相关逻辑。
+# English: Handle engine operations.
 def _engine(spec_dict) -> WorkflowEngine:
     return WorkflowEngine(load_spec(spec_dict), MockLLM())
 
@@ -32,6 +34,7 @@ FLAKY_NODE = {
 
 class TestRetry:
     # 验证“重试`recovers``within``budget`”场景下的预期行为。
+    # English: Verify retry recovers within budget.
     def test_retry_recovers_within_budget(self):
         spec = {"workflow": {"name": "r", "start": "n"},
                 "nodes": {"n": {**FLAKY_NODE, "retries": 3}}}
@@ -40,6 +43,7 @@ class TestRetry:
         assert flaky.calls("k") == 3  # 首次 + 2 次失败 + 第3次成功 = 3 次调用
 
     # 验证“重试`exhausted`抛出不包含启用错误”场景下的预期行为。
+    # English: Verify retry exhausted raises without on error.
     def test_retry_exhausted_raises_without_on_error(self):
         spec = {"workflow": {"name": "r", "start": "n"},
                 "nodes": {"n": {**FLAKY_NODE, "retries": 1}}}
@@ -48,6 +52,7 @@ class TestRetry:
         assert flaky.calls("k") == 2  # 首次 + 1 次重试
 
     # 验证“重试`exhausted``degrades`包含启用错误”场景下的预期行为。
+    # English: Verify retry exhausted degrades with on error.
     def test_retry_exhausted_degrades_with_on_error(self):
         node = {
             **FLAKY_NODE,
@@ -60,12 +65,14 @@ class TestRetry:
         assert final["vars"]["r"] == "降级"
 
     # 验证“无重试按默认项”场景下的预期行为。
+    # English: Verify no retry by default.
     def test_no_retry_by_default(self):
         spec = {"workflow": {"name": "r", "start": "n"}, "nodes": {"n": dict(FLAKY_NODE)}}
         with pytest.raises(ToolError):
             _engine(spec).run({})
         assert flaky.calls("k") == 1
 
+    # English: Verify retry delay is applied.
     def test_retry_delay_is_applied(self, monkeypatch):
         """重试间隔确实生效：拦截 time.sleep 验证调用参数（避免计时抖动）。"""
         sleeps = []
@@ -88,6 +95,7 @@ class TestRetry:
         assert final["vars"]["r"] == "ok after 2 calls"
         assert sleeps == [0.05]  # 仅第一次失败后休眠一次，随后成功
 
+    # English: Verify exponential backoff.
     def test_exponential_backoff(self, monkeypatch):
         """backoff 倍率：第 n 次重试间隔 = retry_delay * backoff^(n-1)。"""
         sleeps = []
@@ -114,6 +122,7 @@ class TestRetry:
 
 class TestTimeout:
     # 验证“`timeout`抛出不包含启用错误”场景下的预期行为。
+    # English: Verify timeout raises without on error.
     def test_timeout_raises_without_on_error(self):
         spec = {
             "workflow": {"name": "t", "start": "n"},
@@ -134,6 +143,7 @@ class TestTimeout:
             _engine(spec).run({})
 
     # 验证“`timeout``degrades`包含启用错误”场景下的预期行为。
+    # English: Verify timeout degrades with on error.
     def test_timeout_degrades_with_on_error(self):
         spec = {
             "workflow": {"name": "t", "start": "n"},
@@ -160,6 +170,7 @@ class TestTimeout:
         assert final["vars"]["msg"] == "完成:超时降级"
 
     # 验证“`fast`工具`within``timeout``succeeds`”场景下的预期行为。
+    # English: Verify fast tool within timeout succeeds.
     def test_fast_tool_within_timeout_succeeds(self):
         spec = {
             "workflow": {"name": "t", "start": "n"},
@@ -192,6 +203,7 @@ class TestOnErrorGoto:
     }
 
     # 验证“`str``next`错误`goes``goto`”场景下的预期行为。
+    # English: Verify str next error goes to goto.
     def test_str_next_error_goes_to_goto(self):
         spec = {
             "workflow": {"name": "og1", "start": "n"},
@@ -207,6 +219,7 @@ class TestOnErrorGoto:
         assert "x" not in final["vars"]       # 正常分支未执行
 
     # 验证“列出`next`错误`goes``goto`”场景下的预期行为。
+    # English: Verify list next error goes to goto.
     def test_list_next_error_goes_to_goto(self):
         spec = {
             "workflow": {"name": "og2", "start": "n"},
@@ -222,6 +235,7 @@ class TestOnErrorGoto:
         assert "x" not in final["vars"] and "w" not in final["vars"]
 
     # 验证“路由`next``goto``takes``precedence``over`路由启用错误”场景下的预期行为。
+    # English: Verify route next goto takes precedence over route on error.
     def test_route_next_goto_takes_precedence_over_route_on_error(self):
         node = {
             **self.FLAKY_GOTO,
@@ -246,6 +260,7 @@ class TestOnErrorGoto:
         assert "z" not in final["vars"]
 
     # 验证“无效`goto`目标`rejected``at`加载”场景下的预期行为。
+    # English: Verify invalid goto target rejected at load.
     def test_invalid_goto_target_rejected_at_load(self):
         from flowagent.errors import ConfigError
 
@@ -257,6 +272,7 @@ class TestOnErrorGoto:
                 },
             })
 
+    # English: Verify node clears its own stale error after a later success.
     def test_node_clears_its_own_stale_error_after_a_later_success(self):
         """评审问题 6：节点失败一次后被路由重试并成功，不应再被旧 error 误路由。
 
@@ -293,6 +309,7 @@ class TestOnErrorGoto:
         assert final["vars"]["r"] == "ok after 2 calls"
         assert final["error"] is None
 
+    # English: Verify other nodes success does not erase an earlier nodes error.
     def test_other_nodes_success_does_not_erase_an_earlier_nodes_error(self):
         """只清自己：下游节点（on_error.goto 目标）成功执行不应抹掉上游节点
         记录的错误——保留给最终状态做诊断展示（对齐既有测试
@@ -324,6 +341,7 @@ class TestTimeoutSemantics:
     }
 
     # 验证“`timeout``returns``promptly`”场景下的预期行为。
+    # English: Verify timeout returns promptly.
     def test_timeout_returns_promptly(self):
         import time as _t
         spec = {"workflow": {"name": "t1", "start": "n"}, "nodes": {"n": dict(self.SLOW_NODE)}}
@@ -335,6 +353,7 @@ class TestTimeoutSemantics:
         assert elapsed < 0.3, f"超时未按时返回，耗时 {elapsed:.3f}s"
 
     # 验证“`timeout``does`不重试`side``effect`”场景下的预期行为。
+    # English: Verify timeout does not retry side effect.
     def test_timeout_does_not_retry_side_effect(self):
         spec = {"workflow": {"name": "t2", "start": "n"},
                 "nodes": {"n": {**self.SLOW_NODE, "retries": 3, "retry_delay": 0}}}
@@ -344,6 +363,7 @@ class TestTimeoutSemantics:
         assert flaky.calls("slow") == 1
 
     # 验证“`timeout``degrades``via`启用错误”场景下的预期行为。
+    # English: Verify timeout degrades via on error.
     def test_timeout_degrades_via_on_error(self):
         spec = {"workflow": {"name": "t3", "start": "n"},
                 "nodes": {"n": {**self.SLOW_NODE,

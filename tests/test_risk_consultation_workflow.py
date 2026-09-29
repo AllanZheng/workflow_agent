@@ -7,6 +7,7 @@ from flowagent.managed_config import load_managed_spec
 
 
 # 生成当前状态的快照。
+# English: Handle snapshot operations.
 def _snapshot(yaml_text):
     from uuid import uuid5, NAMESPACE_URL
     return {
@@ -28,6 +29,7 @@ def _snapshot(yaml_text):
 
 
 # 验证“风险咨询`managed`工作流判断是否模型仅与`does`不修改群组`mode`”场景下的预期行为。
+# English: Verify risk consultation managed workflow is model only and does not change group mode.
 def test_risk_consultation_managed_workflow_is_model_only_and_does_not_change_group_mode():
     from pathlib import Path
 
@@ -41,6 +43,7 @@ def test_risk_consultation_managed_workflow_is_model_only_and_does_not_change_gr
 
 
 # 验证“风险咨询提供方密钥判断是否已读来自`flowagent`环境”场景下的预期行为。
+# English: Verify risk consultation provider key is read from flowagent environment.
 def test_risk_consultation_provider_key_is_read_from_flowagent_environment(monkeypatch):
     import yaml
 
@@ -54,6 +57,7 @@ def test_risk_consultation_provider_key_is_read_from_flowagent_environment(monke
         pass
 
     # 构建模型。
+    # English: Build model.
     def build_model(**kwargs):
         captured.update(kwargs)
         return Model()
@@ -77,6 +81,7 @@ def test_risk_consultation_provider_key_is_read_from_flowagent_environment(monke
 
 
 # 验证“`non`咨询工作流`cannot``use`咨询服务凭据”场景下的预期行为。
+# English: Verify non consultation workflow cannot use consultation service credential.
 def test_non_consultation_workflow_cannot_use_consultation_service_credential(monkeypatch):
     from flowagent.errors import ConfigError
 
@@ -101,6 +106,7 @@ def test_non_consultation_workflow_cannot_use_consultation_service_credential(mo
         raise AssertionError("unrelated workflow used the consultation-only credential")
 
 
+# English: Verify flowagent model credentials env extends the default binding table.
 def test_flowagent_model_credentials_env_extends_the_default_binding_table(monkeypatch):
     """评审 7e：额外的 credential_id/workflow_name 绑定可通过环境变量声明，
     不需要再为每个新场景写一条硬编码分支。"""
@@ -119,6 +125,7 @@ def test_flowagent_model_credentials_env_extends_the_default_binding_table(monke
         pass
 
     # 构建模型。
+    # English: Build model.
     def build_model(**kwargs):
         captured.update(kwargs)
         return Model()
@@ -146,6 +153,7 @@ def test_flowagent_model_credentials_env_extends_the_default_binding_table(monke
     assert config.model_api_key is None
 
 
+# English: Verify unreachable LLM node does not force a model credential.
 def test_unreachable_llm_node_does_not_force_a_model_credential():
     """评审 7f：needs_model 只看可达节点——YAML 里存在一个不可达的 llm 节点
     不应该强制要求模型凭据。"""

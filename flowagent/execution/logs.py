@@ -20,6 +20,7 @@ class ExecutionLog:
     _bytes: int = field(default=0, repr=False)
 
     # 执行添加对应的流程。
+    # English: Add the current operation.
     def add(self, stage: str, level: str, message: str, *, duration_ms: int | None = None) -> None:
         if self.truncated:
             return
@@ -34,6 +35,7 @@ class ExecutionLog:
         self._bytes += entry_size
 
     # 处理元数据相关逻辑。
+    # English: Convert to metadata.
     def to_metadata(self) -> dict[str, object]:
         payload: dict[str, object] = {"logs": list(self.entries)}
         if self.truncated:

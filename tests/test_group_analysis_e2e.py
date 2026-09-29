@@ -43,6 +43,7 @@ from tests.test_im_tools_mcp import FakeIm, _detail, _group, _msg
 pytestmark = pytest.mark.anyio
 
 
+# English: Parse tool payload.
 def _parse_tool_payload(text: str) -> dict:
     """解析 ToolMessage 内容：引擎把 dict 结果 str() 成 Python repr（单引号），
     真实模型两种文本都能读；替身同样两者兼容。"""
@@ -62,6 +63,7 @@ YAML_TEXT = (Path(__file__).resolve().parents[1]
 
 
 # 处理`anyio``backend`相关逻辑。
+# English: Handle anyio backend operations.
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
@@ -69,11 +71,13 @@ def anyio_backend():
 
 # ------------------------------------------------------------ LLM 替身
 
+# English: Return whether tool message.
 def _is_tool_message(message) -> bool:
     return type(message).__name__ == "ToolMessage"
 
 
 # 处理`segment`载荷相关逻辑。
+# English: Handle segment payloads operations.
 def _segment_payloads(messages) -> list[dict]:
     payloads = []
     for message in messages:
@@ -99,6 +103,7 @@ class AgentLoopModel:
     """
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, days: int, sample_cap: int | None = None):
         self.days = days
         self.sample_cap = sample_cap
@@ -107,6 +112,7 @@ class AgentLoopModel:
         self.parallel_issued = False
 
     # 处理`ainvoke`相关逻辑。
+    # English: Handle ainvoke operations.
     async def ainvoke(self, messages):
         tool_messages = [m for m in messages if _is_tool_message(m)]
         if not tool_messages:
@@ -139,6 +145,7 @@ class AgentLoopModel:
         return AIMessage(content=self._digest(messages, total))
 
     # 处理`digest`相关逻辑。
+    # English: Handle digest operations.
     def _digest(self, messages, total: int) -> str:
         segments = _segment_payloads(messages)
         covered = sum(seg.get("coverage", {}).get("messages", 0) for seg in segments)
@@ -157,16 +164,19 @@ class AgentLoopModel:
         )
 
     # 处理`spec`相关逻辑。
+    # English: Handle spec operations.
     @staticmethod
     def _spec(name: str, args: dict, call_id: str) -> dict:
         return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
 
     # 处理`call`相关逻辑。
+    # English: Handle call operations.
     @classmethod
     def _call(cls, name: str, args: dict, call_id: str) -> AIMessage:
         return AIMessage(content="", tool_calls=[cls._spec(name, args, call_id)])
 
     # 处理`astream`相关逻辑。
+    # English: Handle astream operations.
     async def astream(self, messages):
         yield await self.ainvoke(messages)
 
@@ -177,6 +187,7 @@ class E2ELLM:
     name = "e2e-fake"
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, *, parse_output: str | None = None, parse_bad: bool = False,
                  report_note: str = "", sample_cap: int | None = None):
         self.parse_output = parse_output or (
@@ -190,12 +201,14 @@ class E2ELLM:
         self.parse_prompts: list[str] = []
 
     # 处理`bind`工具相关逻辑。
+    # English: Handle bind tools operations.
     def bind_tools(self, tools) -> AgentLoopModel:
         # agent_runtime 传入 OpenAI 形状 schema：{"type":"function","function":{...}}
         assert {tool["function"]["name"] for tool in tools} == {"fetch_group_messages"}
         return AgentLoopModel(self.last_days, sample_cap=self.sample_cap)
 
     # 处理`invoke`相关逻辑。
+    # English: Handle invoke operations.
     def invoke(self, messages, config=None, **kwargs):
         prompt = str(messages[-1].content)
         if "只输出 JSON" in prompt and "消息：" in prompt:
@@ -222,6 +235,7 @@ class E2ELLM:
         return AIMessage(content="{}")
 
     # 报告文本。
+    # English: Report text.
     def _report_text(self) -> str:
         return (
             "## 总结\n本周期完成发布准备与回归验证。\n"
@@ -232,6 +246,7 @@ class E2ELLM:
         )
 
     # 处理`astream`相关逻辑。
+    # English: Handle astream operations.
     async def astream(self, messages, config=None, **kwargs):
         prompt = str(messages[-1].content)
         assert "请输出群分析报告" in prompt
@@ -242,6 +257,7 @@ class E2ELLM:
 
 # ------------------------------------------------------------ 环境装配
 
+# English: Handle fake IM operations.
 def _fake_im(days: int, per_day: int = 3) -> FakeIm:
     """最近 N 天、每天 per_day 条消息的项目协作群（含一个干扰群）。"""
     now = datetime.now(UTC)
@@ -268,6 +284,7 @@ def _fake_im(days: int, per_day: int = 3) -> FakeIm:
 
 
 # 处理`envelope`相关逻辑。
+# English: Handle envelope operations.
 def _envelope(message: str, history: list[dict] | None = None,
               execution_id: str = "e2e-e1", conversation_id: int | None = 11) -> dict:
     snapshot = {
@@ -304,6 +321,7 @@ class E2EStack:
     """离线全链路栈：execution app（真实）+ MCP 会话工厂 + im-tools-mcp（真实）。"""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, fake_im: FakeIm, llm: E2ELLM):
         self.fake_im = fake_im
         self.llm = llm
@@ -314,6 +332,7 @@ class E2EStack:
         self._lifespan_depth = 0
         self._lifespan_cm = None
 
+    # English: Handle lifespan operations.
     @asynccontextmanager
     async def lifespan(self):
         """im-tools-mcp 会话管理器生命周期：每实例只允许 run 一次，
@@ -332,6 +351,7 @@ class E2EStack:
                 self._lifespan_cm = None
 
     # 处理客户端相关逻辑。
+    # English: Handle client operations.
     def _client(self, token: str) -> ImClient:
         return ImClient(
             "http://im.test", token, timeout_seconds=5,
@@ -341,6 +361,7 @@ class E2EStack:
             ),
         )
 
+    # English: Handle MCP session factory operations.
     def mcp_session_factory(self):
         """McpEdgeClient 会话工厂：ASGI 直连 im-tools-mcp 应用（真 MCP 协议）。
 
@@ -350,8 +371,10 @@ class E2EStack:
         """
 
         # 处理工厂方法相关逻辑。
+        # English: Handle factory operations.
         def factory(endpoint, headers, timeout_seconds):
             # 处理会话相关逻辑。
+            # English: Handle session operations.
             @asynccontextmanager
             async def _session():
                 http = httpx2.AsyncClient(
@@ -369,6 +392,7 @@ class E2EStack:
 
         return factory
 
+    # English: Install the current operation.
     def install(self, monkeypatch) -> None:
         """把替身 LLM 与 MCP 会话工厂接入 execution_service（唯一两处注入点）。"""
         monkeypatch.setattr(
@@ -382,6 +406,7 @@ class E2EStack:
         )
 
     # 处理客户端相关逻辑。
+    # English: Handle client operations.
     def client(self) -> httpx2.AsyncClient:
         return httpx2.AsyncClient(
             transport=httpx2.ASGITransport(app=self.execution_app),
@@ -389,6 +414,7 @@ class E2EStack:
         )
 
 
+# English: Handle the current operation.
 async def _respond(stack: E2EStack, message: str, history: list[dict] | None = None,
                    conversation_id: int | None = 11):
     """在 im-tools-mcp lifespan 就绪的前提下打 respond 端点。"""
@@ -402,6 +428,7 @@ async def _respond(stack: E2EStack, message: str, history: list[dict] | None = N
 
 # ------------------------------------------------------------ L3 用例
 
+# English: Verify normal seven day analysis full chain.
 async def test_normal_seven_day_analysis_full_chain(monkeypatch):
     """用例 1：「分析群 X 最近 7 天」→ 结构完整报告（三段标题齐全）。"""
     stack = E2EStack(_fake_im(days=7), E2ELLM())
@@ -417,6 +444,7 @@ async def test_normal_seven_day_analysis_full_chain(monkeypatch):
 
 
 # 验证“`custom``taxonomy`判断是否`applied``program`数量”场景下的预期行为。
+# English: Verify custom taxonomy is applied to program counts.
 async def test_custom_taxonomy_is_applied_to_program_counts(monkeypatch):
     llm = E2ELLM(parse_output=(
         '{"start":"","end":"","days":7,'
@@ -433,6 +461,7 @@ async def test_custom_taxonomy_is_applied_to_program_counts(monkeypatch):
     assert "问题：" not in response.json()["reply"]
 
 
+# English: Verify missing group name clarifies then converges.
 async def test_missing_group_name_clarifies_then_converges(monkeypatch):
     """缺目标 ID 先反问；给出 ID 后继续分析。"""
     stack = E2EStack(_fake_im(days=7), E2ELLM(parse_output=(
@@ -457,6 +486,7 @@ async def test_missing_group_name_clarifies_then_converges(monkeypatch):
     assert any("帮我分析一下群" in prompt for prompt in stack.llm.parse_prompts)
 
 
+# English: Verify thirty day window segments across tool rounds.
 async def test_thirty_day_window_segments_across_tool_rounds(monkeypatch):
     """用例 3：30 天大窗口 → 分段纪要多轮调用 → 汇总成功，报告含覆盖率声明。"""
     llm = E2ELLM(
@@ -473,6 +503,7 @@ async def test_thirty_day_window_segments_across_tool_rounds(monkeypatch):
     assert "覆盖率" in reply
 
 
+# English: Verify segment overflow falls back to sampling.
 async def test_segment_overflow_falls_back_to_sampling(monkeypatch):
     """用例 4：分段数超护栏 → 采样兜底路径 + 报告声明覆盖率。"""
     llm = E2ELLM(
@@ -489,6 +520,7 @@ async def test_segment_overflow_falls_back_to_sampling(monkeypatch):
     assert "采样" in reply and "覆盖率" in reply
 
 
+# English: Verify IM unreachable degrades gracefully.
 async def test_im_unreachable_degrades_gracefully(monkeypatch):
     """用例 5：im 不可达 → 用户可读错误提示，请求仍 200（会话不崩）。"""
     fake_im = _fake_im(days=7)
@@ -502,6 +534,7 @@ async def test_im_unreachable_degrades_gracefully(monkeypatch):
     assert "im-tools-mcp" in reply  # 运维指引而非堆栈
 
 
+# English: Verify SSE stream event sequence is valid.
 async def test_sse_stream_event_sequence_is_valid(monkeypatch):
     """用例 6：流式 SSE meta/delta/done 事件序合法（meta 首、seq 单调、单一终态）。"""
     stack = E2EStack(_fake_im(days=7), E2ELLM())

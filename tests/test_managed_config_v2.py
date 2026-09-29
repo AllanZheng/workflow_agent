@@ -14,13 +14,16 @@ FIXTURES = Path(__file__).parent / "fixtures" / "agent_capabilities"
 
 
 # 处理`fixture`相关逻辑。
+# English: Handle fixture operations.
 def _fixture(name):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
 # 验证“`shared``v1``v2``fixture``digests``are``stable`”场景下的预期行为。
+# English: Verify shared v1 v2 fixture digests are stable.
 def test_shared_v1_v2_fixture_digests_are_stable():
     # 处理`digests`相关逻辑。
+    # English: Handle digests operations.
     def digests(name):
         raw = (FIXTURES / name).read_bytes()
         return {
@@ -33,6 +36,7 @@ def test_shared_v1_v2_fixture_digests_are_stable():
 
 
 # 验证“`managed`代理配置接受`shared`生成快照”场景下的预期行为。
+# English: Verify managed agent config accepts shared snapshot.
 @pytest.mark.parametrize("name", ["v1.json", "v2.json"])
 def test_managed_agent_config_accepts_shared_snapshot(name):
     raw = _fixture(name)
@@ -45,6 +49,7 @@ def test_managed_agent_config_accepts_shared_snapshot(name):
 
 
 # 验证“`managed`代理配置拒绝技能内容体未知字段与令牌”场景下的预期行为。
+# English: Verify managed agent config rejects skill body unknown fields and token.
 def test_managed_agent_config_rejects_skill_body_unknown_fields_and_token():
     for mutate in (
         lambda data: data["skills"][0].update(content="private body"),
@@ -62,6 +67,7 @@ def test_managed_agent_config_rejects_skill_body_unknown_fields_and_token():
 
 
 # 验证“能力`v2``uses``separate``authenticated`接口”场景下的预期行为。
+# English: Verify capabilities v2 uses a separate authenticated endpoint.
 def test_capabilities_v2_uses_a_separate_authenticated_endpoint():
     client = TestClient(build_execution_app("internal", "legacy-workload"))
 

@@ -14,15 +14,18 @@ RA = "configs/refund_approval.yaml"
 
 
 # 处理`cs``spec`相关逻辑。
+# English: Handle cs spec operations.
 @pytest.fixture
 def cs_spec():
     return load_spec_file(CS)
 
 
 # 处理`engine`工厂方法相关逻辑。
+# English: Handle engine factory operations.
 @pytest.fixture
 def engine_factory(cs_spec):
     # 执行构建对应的流程。
+    # English: Create the current operation.
     def _make() -> WorkflowEngine:
         return WorkflowEngine(copy.deepcopy(cs_spec), MockLLM())
 
@@ -31,6 +34,7 @@ def engine_factory(cs_spec):
 
 class TestCustomerService:
     # 验证“`refund``branch`”场景下的预期行为。
+    # English: Verify refund branch.
     def test_refund_branch(self, engine_factory):
         final = engine_factory().run({"ticket": "商品坏了，我要退款"})
         assert final["vars"]["category"] == "退款"
@@ -41,6 +45,7 @@ class TestCustomerService:
         ]
 
     # 验证“`tech``branch``uses`工具”场景下的预期行为。
+    # English: Verify tech branch uses tool.
     def test_tech_branch_uses_tool(self, engine_factory):
         spec = engine_factory().spec
         spec.nodes["classify"].mock_response = "技术"
@@ -50,6 +55,7 @@ class TestCustomerService:
         assert "diagnose" in [s["node"] for s in final["trace"]]
 
     # 验证“`complaint``branch``parallel``fanout`”场景下的预期行为。
+    # English: Verify complaint branch parallel fanout.
     def test_complaint_branch_parallel_fanout(self, engine_factory):
         spec = engine_factory().spec
         spec.nodes["classify"].mock_response = "我要投诉"
@@ -63,6 +69,7 @@ class TestCustomerService:
         assert set(["compensation", "notify_team", "review"]).issubset(set(nodes_run))
 
     # 验证“`faq`默认项`branch`”场景下的预期行为。
+    # English: Verify faq default branch.
     def test_faq_default_branch(self, engine_factory):
         spec = engine_factory().spec
         spec.nodes["classify"].mock_response = "这是一个咨询问题"
@@ -72,6 +79,7 @@ class TestCustomerService:
         assert "faq" in [s["node"] for s in final["trace"]]
 
     # 验证“`review``loop``triggers`当`score``low`”场景下的预期行为。
+    # English: Verify review loop triggers when score low.
     def test_review_loop_triggers_when_score_low(self, cs_spec):
         spec = copy.deepcopy(cs_spec)
         spec.nodes["classify"].mock_response = "退款"
@@ -87,6 +95,7 @@ class TestCustomerService:
 
 class TestReportWriter:
     # 验证“`full`运行包含`loop``guard`”场景下的预期行为。
+    # English: Verify full run with loop guard.
     def test_full_run_with_loop_guard(self):
         spec = load_spec_file(RW)
         engine = WorkflowEngine(spec, MockLLM())
@@ -101,6 +110,7 @@ class TestReportWriter:
         assert "主题调研报告" in final["vars"]["final_report"]
 
     # 验证“`high``score``skips``loop`”场景下的预期行为。
+    # English: Verify high score skips loop.
     def test_high_score_skips_loop(self):
         spec = load_spec_file(RW)
         spec.nodes["review"].mock_response = '{"score": 9, "reason": "优秀"}'
@@ -131,6 +141,7 @@ class TestRefundApproval:
     """综合示例（子图+HITL+重试+质检循环）的端到端验证。"""
 
     # 验证“`low`风险`auto`路径”场景下的预期行为。
+    # English: Verify low risk auto path.
     def test_low_risk_auto_path(self):
         engine = WorkflowEngine(load_spec_file(RA), MockLLM())
         final = engine.run({"ticket": "T-1", "amount": 50})
@@ -141,6 +152,7 @@ class TestRefundApproval:
         assert "退款处理完成" in final["vars"]["final_notice"]
 
     # 验证“`high`风险`approved``via``human`”场景下的预期行为。
+    # English: Verify high risk approved via human.
     def test_high_risk_approved_via_human(self, tmp_path):
         child = tmp_path / "risk_high.yaml"
         child.write_text(HIGH_RISK_CHILD, encoding="utf-8")
@@ -160,6 +172,7 @@ class TestRefundApproval:
         assert "退款处理完成" in final["vars"]["final_notice"]
 
     # 验证“`high`风险`rejected``via``human`”场景下的预期行为。
+    # English: Verify high risk rejected via human.
     def test_high_risk_rejected_via_human(self, tmp_path):
         child = tmp_path / "risk_high.yaml"
         child.write_text(HIGH_RISK_CHILD, encoding="utf-8")
@@ -177,6 +190,7 @@ class TestRefundApproval:
         assert "已驳回" in final["vars"]["final_notice"]
 
     # 验证“`qa`修订版本`loop``pipeline`”场景下的预期行为。
+    # English: Verify qa revision loop in pipeline.
     def test_qa_revision_loop_in_pipeline(self):
         spec = load_spec_file(RA)
         spec.nodes["qa"].mock_response = '{"score": 5, "reason": "缺少到账时间"}'
@@ -189,6 +203,7 @@ class TestApprovalNegativeSemantics:
     """4.1：否定式答复绝不进入批准分支（双层防护：options 强校验 + eq 路由）。"""
 
     # 验证“`bu``pizhun``blocked`按`options``then`拒绝”场景下的预期行为。
+    # English: Verify bu pizhun blocked by options then reject.
     def test_bu_pizhun_blocked_by_options_then_reject(self, project_root):
         # 第一层：approval.yaml 声明了 options，未知值被引擎拦截重新询问
         spec = load_spec_file(project_root / "configs" / "approval.yaml")
@@ -201,6 +216,7 @@ class TestApprovalNegativeSemantics:
         assert "已批准" not in final["vars"]["final"]
 
     # 验证“`bu``pizhun`路由拒绝不包含`options`”场景下的预期行为。
+    # English: Verify bu pizhun routes to reject without options.
     def test_bu_pizhun_routes_to_reject_without_options(self, project_root):
         # 第二层：即使未声明 options（自由文本），eq 也不匹配“不批准”，落入安全侧 default
         spec = load_spec_file(project_root / "configs" / "approval.yaml")

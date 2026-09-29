@@ -49,11 +49,13 @@ class _TextStreamNormalizer:
     """让 text parser 的可见增量与最终 strip 后的值严格一致。"""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self) -> None:
         self.started = False
         self.trailing = ""
 
     # 处理`feed`相关逻辑。
+    # English: Handle feed operations.
     def feed(self, content: str) -> str:
         if not self.started:
             content = content.lstrip()
@@ -66,6 +68,7 @@ class _TextStreamNormalizer:
         return visible
 
 
+# English: Clear own error.
 def _clear_own_error(state: dict, name: str) -> dict:
     """节点成功时，若 state.error 记录的正是这个节点自己的上次失败，则清除它。
 
@@ -80,6 +83,7 @@ def _clear_own_error(state: dict, name: str) -> dict:
     return {}
 
 
+# English: Handle summarize operations.
 def _summarize(result: dict) -> dict:
     """轨迹里只留简短摘要，避免大对象撑爆状态。"""
     out = {}
@@ -96,6 +100,7 @@ def _summarize(result: dict) -> dict:
     return out
 
 
+# English: Handle with timeout operations.
 def _with_timeout(func, args: tuple, timeout: float | None):
     """带超时的函数执行；timeout 为 None 时直接调用。
 
@@ -125,11 +130,13 @@ class NodeHooks:
     """节点级事件钩子（可选）：观测/审计用，钩子异常不影响工作流执行。"""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, on_node_start=None, on_node_end=None):
         self.on_node_start = on_node_start  # (node_name, state) -> None
         self.on_node_end = on_node_end      # (node_name, result|None, error|None) -> None
 
     # 处理安全相关逻辑。
+    # English: Handle safe operations.
     def _safe(self, event, *args):
         handler = getattr(self, event, None)
         if handler is None:
@@ -142,14 +149,17 @@ class NodeHooks:
                                     "hook_event": event})
 
     # 发出启动。
+    # English: Emit start.
     def emit_start(self, name, state):
         self._safe("on_node_start", name, state)
 
     # 发出`end`。
+    # English: Emit end.
     def emit_end(self, name, result, error):
         self._safe("on_node_end", name, result, error)
 
 
+# English: Handle sub workflow engine operations.
 def _sub_workflow_engine(workflow_file: str, llm=None, checkpointer=None):
     """加载（并缓存）子图引擎；避免 import 环，延迟导入。
 
@@ -175,6 +185,7 @@ def _sub_workflow_engine(workflow_file: str, llm=None, checkpointer=None):
     return engine
 
 
+# English: Handle current thread ID operations.
 def _current_thread_id() -> str | None:
     """读取当前 LangGraph 执行上下文的 thread_id（用于派生稳定的子图线程标识）。
 
@@ -188,6 +199,7 @@ def _current_thread_id() -> str | None:
         return None
 
 
+# English: Handle enrich payload operations.
 def _enrich_payload(payload, node_name: str, sub_tid: str):
     """把子图 interrupt 载荷提升到父图时补充定位上下文（不覆盖原字段）。"""
     if isinstance(payload, dict):
@@ -198,6 +210,7 @@ def _enrich_payload(payload, node_name: str, sub_tid: str):
     return payload
 
 
+# English: Execute node.
 def execute_node(node: NodeConfig, state: dict, llm, node_name: str = "", checkpointer=None) -> dict:
     """执行单个节点，返回要合并进 vars 的增量字典。"""
     ctx = dict(state.get("vars") or {})
@@ -286,6 +299,7 @@ def execute_node(node: NodeConfig, state: dict, llm, node_name: str = "", checkp
     raise FlowAgentError(f"未知节点类型: {node.type}")
 
 
+# English: Run with reliability.
 def _run_with_reliability(
     name: str, node: NodeConfig, state: dict, llm, checkpointer=None
 ) -> dict:
@@ -314,12 +328,14 @@ def _run_with_reliability(
                 time.sleep(node.retry_delay * (node.backoff ** (attempt - 1)))
 
 
+# English: Create node executor.
 def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hooks: "NodeHooks | None" = None,
                        agent_runtime=None, stream_final_reply: bool = False):
     """构造 LangGraph 节点函数：执行业务逻辑 + 事件钩子 + 轨迹/计数 + 错误降级。"""
 
     is_final_reply = stream_final_reply and node.output_key == "reply" and node.next == "END"
 
+    # English: Start the current operation.
     def _start(state: dict) -> tuple[dict, float]:
         """三种执行器共用的入口记账：钩子 + loop_counts 递增 + 计时起点（评审 7c）。"""
         if hooks is not None:
@@ -328,6 +344,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
         counts[name] = counts.get(name, 0) + 1
         return counts, time.monotonic()
 
+    # English: Handle success operations.
     def _success(result: dict, counts: dict, started: float, state: dict) -> dict:
         """三种执行器共用的成功收尾：trace 记录 + 清除本节点自己的旧 error。"""
         if hooks is not None:
@@ -339,6 +356,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
             **_clear_own_error(state, name),
         }
 
+    # English: Handle failure operations.
     def _failure(exc: Exception, counts: dict, started: float) -> dict:
         """走 on_error 时的收尾。调用方须先处理"不允许走 on_error"的场景
         （已发出可见 delta、interrupt 等控制流）——那些场景要直接重新抛出，
@@ -353,6 +371,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
             "error": error,
         }
 
+    # English: Handle reraise without on error operations.
     def _reraise_without_on_error(exc: Exception):
         """没有配置 on_error 时：钩子照常触发，但直接向上抛出。"""
         if hooks is not None:
@@ -361,6 +380,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
 
     if node.type == "agent":
         # 处理代理`executor`相关逻辑。
+        # English: Handle agent executor operations.
         async def agent_executor(state: WFState) -> dict:
             if agent_runtime is None:
                 raise FlowAgentError("受管 Agent Runtime 未初始化")
@@ -376,6 +396,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                             writer = get_stream_writer()
 
                             # 流式处理`answer`。
+                            # English: Handle stream answer operations.
                             async def stream_answer() -> str:
                                 chunks: list[str] = []
                                 async for delta in agent_runtime.stream(
@@ -430,6 +451,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
 
     if node.type == "llm" and is_final_reply:
         # 处理`streamed`大语言模型`executor`相关逻辑。
+        # English: Handle streamed LLM executor operations.
         async def streamed_llm_executor(state: WFState) -> dict:
             if llm is None:
                 raise FlowAgentError("LLM 未初始化")
@@ -444,6 +466,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
                 writer = get_stream_writer()
 
                 # 流式处理`attempt`。
+                # English: Handle stream attempt operations.
                 async def stream_attempt():
                     chunks: list[str] = []
                     normalizer = _TextStreamNormalizer()
@@ -495,6 +518,7 @@ def make_node_executor(name: str, node: NodeConfig, llm, checkpointer=None, hook
         return streamed_llm_executor
 
     # 处理`executor`相关逻辑。
+    # English: Handle executor operations.
     def executor(state: WFState) -> dict:
         counts, started = _start(state)
         try:

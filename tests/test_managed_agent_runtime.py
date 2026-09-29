@@ -10,11 +10,14 @@ from flowagent.managed_config import load_managed_spec
 
 class FakeMcp:
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self): self.calls = []
     # 列出工具。
+    # English: List tools.
     async def list_tools(self):
         return [{"name": "search", "description": "search", "input_schema": {"type": "object"}}]
     # 处理`call`工具相关逻辑。
+    # English: Handle call tool operations.
     async def call_tool(self, name, arguments):
         self.calls.append((name, arguments))
         return "tool-result"
@@ -22,19 +25,24 @@ class FakeMcp:
 
 class FakeBoundLlm:
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, replies): self.replies = iter(replies)
     # 处理`ainvoke`相关逻辑。
+    # English: Handle ainvoke operations.
     async def ainvoke(self, messages): return next(self.replies)
 
 
 class FakeLlm:
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, replies): self.bound = FakeBoundLlm(replies); self.tools = None
     # 处理`bind`工具相关逻辑。
+    # English: Handle bind tools operations.
     def bind_tools(self, tools): self.tools = tools; return self.bound
 
 
 # 验证“群组`resolution``needing`用户输入`finishes`不包含`repeated``calls`”场景下的预期行为。
+# English: Verify group resolution needing user input finishes without repeated calls.
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("resolution,expected", [
     ({"status": "not_found"}, "没有找到"),
@@ -46,24 +54,30 @@ class FakeLlm:
 def test_group_resolution_needing_user_input_finishes_without_repeated_calls(streaming, resolution, expected):
     class ResolvingMcp:
         # 初始化对象状态并建立所需依赖。
+        # English: Initialize object state and required dependencies.
         def __init__(self): self.calls = 0
         # 列出工具。
+        # English: List tools.
         async def list_tools(self):
             return [{"name": "platform_resolve_group"}]
         # 处理`call`工具相关逻辑。
+        # English: Handle call tool operations.
         async def call_tool(self, name, arguments):
             self.calls += 1
             return resolution
 
     class RepeatingModel:
         # 处理`bind`工具相关逻辑。
+        # English: Handle bind tools operations.
         def bind_tools(self, tools): return self
         # 处理`ainvoke`相关逻辑。
+        # English: Handle ainvoke operations.
         async def ainvoke(self, messages):
             return AIMessage(content="", tool_calls=[{
                 "id": "resolve", "name": "platform_resolve_group", "args": {"name_query": "风险会商群"},
             }])
         # 处理`astream`相关逻辑。
+        # English: Handle astream operations.
         async def astream(self, messages):
             response = await self.ainvoke(messages)
             yield AIMessageChunk(content="", tool_calls=response.tool_calls)
@@ -71,6 +85,7 @@ def test_group_resolution_needing_user_input_finishes_without_repeated_calls(str
     mcp = ResolvingMcp()
     runtime = ManagedAgentRuntime(RepeatingModel(), mcp)
     # 执行执行对应的流程。
+    # English: Execute the current operation.
     async def execute():
         if streaming:
             return "".join([part async for part in runtime.stream("总结风险会商群", "", 8)])
@@ -80,6 +95,7 @@ def test_group_resolution_needing_user_input_finishes_without_repeated_calls(str
 
 
 # 验证“代理`calls`MCP工具`then``returns``final``answer`”场景下的预期行为。
+# English: Verify agent calls MCP tool then returns final answer.
 def test_agent_calls_mcp_tool_then_returns_final_answer():
     llm = FakeLlm([
         AIMessage(content="", tool_calls=[{"id": "c1", "name": "search", "args": {"q": "x"}}]),
@@ -93,6 +109,7 @@ def test_agent_calls_mcp_tool_then_returns_final_answer():
 
 
 # 验证“代理停止`at`已配置工具`iteration`数量上限”场景下的预期行为。
+# English: Verify agent stops at configured tool iteration limit.
 def test_agent_stops_at_configured_tool_iteration_limit():
     calls = [AIMessage(content="", tool_calls=[{"id": f"c{i}", "name": "search", "args": {}}]) for i in range(3)]
     with pytest.raises(ToolIterationLimit):
@@ -100,17 +117,20 @@ def test_agent_stops_at_configured_tool_iteration_limit():
 
 
 # 验证“代理`places`历史记录之前当前项消息”场景下的预期行为。
+# English: Verify agent places history before current message.
 def test_agent_places_history_before_current_message():
     captured = {}
 
     class CapturingModel:
         # 处理`ainvoke`相关逻辑。
+        # English: Handle ainvoke operations.
         async def ainvoke(self, messages):
             captured["messages"] = messages
             return AIMessage(content="answer")
 
     class CapturingLlm:
         # 处理`bind`工具相关逻辑。
+        # English: Handle bind tools operations.
         def bind_tools(self, tools): return CapturingModel()
 
     result = asyncio.run(ManagedAgentRuntime(CapturingLlm(), FakeMcp()).run(
@@ -130,6 +150,7 @@ def test_agent_places_history_before_current_message():
 
 
 # 验证“`managed`图执行代理节点包含请求运行时”场景下的预期行为。
+# English: Verify managed graph executes agent node with request runtime.
 def test_managed_graph_executes_agent_node_with_request_runtime():
     spec = load_managed_spec("""
 workflow:
@@ -145,8 +166,10 @@ nodes:
 
     class FakeRuntime:
         # 初始化对象状态并建立所需依赖。
+        # English: Initialize object state and required dependencies.
         def __init__(self): self.calls = []
         # 执行当前任务流程并返回运行结果。
+        # English: Run the current operation.
         async def run(self, message, system_prompt, max_tool_iterations, history=None):
             self.calls.append((message, system_prompt, max_tool_iterations, history))
             return "managed-answer"
@@ -165,6 +188,7 @@ nodes:
 # ---------------------------------------------------------------- P3 会话连续性
 
 
+# English: Verify session plan starts new without checkpoint.
 def test_session_plan_starts_new_without_checkpoint():
     from flowagent.session_continuity import plan_session
 
@@ -176,6 +200,7 @@ def test_session_plan_starts_new_without_checkpoint():
 
 
 # 验证“会话`plan``reuses`仅启用`identical``digest`与结构”场景下的预期行为。
+# English: Verify session plan reuses only on identical digest and schema.
 def test_session_plan_reuses_only_on_identical_digest_and_schema():
     from flowagent.session_continuity import plan_session
 
@@ -196,6 +221,7 @@ def test_session_plan_reuses_only_on_identical_digest_and_schema():
 
 
 # 验证“会话`plan``never``silently``continues`未知`digest`”场景下的预期行为。
+# English: Verify session plan never silently continues unknown digest.
 def test_session_plan_never_silently_continues_unknown_digest():
     from flowagent.session_continuity import plan_session
 

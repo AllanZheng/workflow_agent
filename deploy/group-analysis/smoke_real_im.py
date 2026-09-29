@@ -39,6 +39,7 @@ class SmokeConfigurationError(ValueError):
 
 
 # 读取必需配置值，并在缺失时停止后续处理。
+# English: Handle required operations.
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -46,6 +47,7 @@ def _required(name: str) -> str:
     return value
 
 
+# English: Authenticate token.
 async def _login_token() -> str:
     """经 auth 登录换取 im 可用的 access token（凭据只从环境变量读）。"""
     async with httpx2.AsyncClient(timeout=15) as client:
@@ -64,6 +66,7 @@ async def _login_token() -> str:
 
 
 # 解析入口参数并启动主流程。
+# English: Run the main entry point.
 async def main() -> int:
     token = await _login_token()
     group_query = _required("SMOKE_GROUP_QUERY")

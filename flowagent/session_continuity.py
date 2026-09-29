@@ -20,11 +20,13 @@ class SessionDecision:
     reason: str
 
     # 处理错误`code`相关逻辑。
+    # English: Handle error code operations.
     @property
     def error_code(self) -> str | None:
         return SESSION_RESTART_REQUIRED if self.action == "restart_required" else None
 
 
+# English: Handle plan session operations.
 def plan_session(
     *,
     has_checkpoint: bool,

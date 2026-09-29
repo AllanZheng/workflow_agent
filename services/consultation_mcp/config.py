@@ -9,6 +9,7 @@ class SettingsError(ValueError):
 
 
 # 处理正数标识集合相关逻辑。
+# English: Handle positive IDs operations.
 def _positive_ids(value: str, name: str) -> frozenset[int]:
     try:
         ids = frozenset(int(part.strip()) for part in value.split(",") if part.strip())
@@ -31,6 +32,7 @@ class Settings:
     timeout_seconds: float = 10.0
 
     # 处理来自环境变量相关逻辑。
+    # English: Build from env.
     @classmethod
     def from_env(cls, env=None) -> "Settings":
         source = os.environ if env is None else env

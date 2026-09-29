@@ -14,6 +14,7 @@ from .config import Settings
 
 
 # 解析入口参数并启动主流程。
+# English: Run the main entry point.
 def main() -> int:
     try:
         settings = Settings.from_env()

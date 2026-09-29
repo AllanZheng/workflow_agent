@@ -15,26 +15,31 @@ YAML = Path(__file__).parents[1] / "configs" / "managed" / "group_analysis.yaml"
 
 
 # 验证“`custom``taxonomy``keeps`仅`requested``categories`”场景下的预期行为。
+# English: Verify custom taxonomy keeps only requested categories.
 def test_custom_taxonomy_keeps_only_requested_categories():
     assert _taxonomy("按消息性质分技术类/管理类") == ("技术类", "管理类", "未归类")
 
 
 # 验证“`batches``never`拆分消息”场景下的预期行为。
+# English: Verify batches never split a message.
 def test_batches_never_split_a_message():
     messages = [{"message_ref": f"m{i}", "text": "消息" * 5} for i in range(3)]
     assert [len(batch) for batch in _batches(messages, max_chars=11)] == [1, 1, 1]
 
 
 # 验证“`unclear``taxonomy``asks`针对`categories`不包含`reading``im`”场景下的预期行为。
+# English: Verify unclear taxonomy asks for categories without reading IM.
 @pytest.mark.anyio
 async def test_unclear_taxonomy_asks_for_categories_without_reading_im():
     class Client:
         # 处理`call`工具相关逻辑。
+        # English: Handle call tool operations.
         async def call_tool(self, name, args):
             raise AssertionError("IM must not be called")
 
     class LLM:
         # 处理`invoke`相关逻辑。
+        # English: Handle invoke operations.
         def invoke(self, messages):
             return AIMessage(content='{"start":"","end":"","days":7,"taxonomy_override":"换个口径"}')
 
@@ -47,10 +52,12 @@ async def test_unclear_taxonomy_asks_for_categories_without_reading_im():
 
 
 # 验证“无效模型`classification``cannot``be``counted`”场景下的预期行为。
+# English: Verify invalid model classification cannot be counted.
 @pytest.mark.anyio
 async def test_invalid_model_classification_cannot_be_counted():
     class Client:
         # 处理`call`工具相关逻辑。
+        # English: Handle call tool operations.
         async def call_tool(self, name, args):
             assert name == "fetch_group_analysis_input"
             assert args["conversation_id"] == 5
@@ -63,6 +70,7 @@ async def test_invalid_model_classification_cannot_be_counted():
 
     class LLM:
         # 处理`invoke`相关逻辑。
+        # English: Handle invoke operations.
         def invoke(self, messages):
             prompt = messages[-1].content
             if "请输出解析结果 JSON" in prompt:
@@ -83,12 +91,14 @@ async def test_invalid_model_classification_cannot_be_counted():
 
 
 # 验证“群组名称判断是否`resolved`之前消息`are`已读”场景下的预期行为。
+# English: Verify group name is resolved before messages are read.
 @pytest.mark.anyio
 async def test_group_name_is_resolved_before_messages_are_read():
     calls = []
 
     class Client:
         # 处理`call`工具相关逻辑。
+        # English: Handle call tool operations.
         async def call_tool(self, name, args):
             calls.append((name, args))
             if name == "platform_resolve_group":
@@ -102,6 +112,7 @@ async def test_group_name_is_resolved_before_messages_are_read():
 
     class LLM:
         # 处理`invoke`相关逻辑。
+        # English: Handle invoke operations.
         def invoke(self, messages):
             if "请输出解析结果 JSON" in messages[-1].content:
                 return AIMessage(content='{"group_query":"验收测试群","group_id":null,"start":"","end":"","days":1,"taxonomy_override":""}')
@@ -117,10 +128,12 @@ async def test_group_name_is_resolved_before_messages_are_read():
 
 
 # 验证“`ambiguous`群组名称`does`不已读消息”场景下的预期行为。
+# English: Verify ambiguous group name does not read messages.
 @pytest.mark.anyio
 async def test_ambiguous_group_name_does_not_read_messages():
     class Client:
         # 处理`call`工具相关逻辑。
+        # English: Handle call tool operations.
         async def call_tool(self, name, args):
             assert name == "platform_resolve_group"
             return {"status": "ambiguous", "candidates": [
@@ -130,6 +143,7 @@ async def test_ambiguous_group_name_does_not_read_messages():
 
     class LLM:
         # 处理`invoke`相关逻辑。
+        # English: Handle invoke operations.
         def invoke(self, messages):
             return AIMessage(content='{"group_query":"项目群","group_id":null,"start":"","end":"","days":null,"taxonomy_override":""}')
 

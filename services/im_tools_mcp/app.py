@@ -61,6 +61,7 @@ TOOL_DESCRIPTIONS = {
 ImClientFactory = Callable[[str], ImClient]
 
 
+# English: Handle bearer auth wrapper operations.
 def bearer_auth_wrapper(child, expected_token: str = ""):
     """纯 ASGI Bearer 校验包装：失败 401 稳定 JSON，成功写 ContextVar 后放行。
 
@@ -69,6 +70,7 @@ def bearer_auth_wrapper(child, expected_token: str = ""):
     """
 
     # 处理`wrapped`相关逻辑。
+    # English: Handle wrapped operations.
     async def wrapped(scope, receive, send) -> None:
         if scope["type"] != "http":
             await child(scope, receive, send)
@@ -98,6 +100,7 @@ def bearer_auth_wrapper(child, expected_token: str = ""):
     return wrapped
 
 
+# English: Handle error result operations.
 def _error_result(payload: dict[str, Any]) -> mcp_types.CallToolResult:
     """构造 is_error 的 CallToolResult：结构化载荷 + 等义 JSON 文本。"""
     return mcp_types.CallToolResult(
@@ -110,6 +113,7 @@ def _error_result(payload: dict[str, Any]) -> mcp_types.CallToolResult:
     )
 
 
+# English: Build app.
 def build_app(
     settings: Settings | None = None,
     *,
@@ -128,6 +132,7 @@ def build_app(
     make_client = im_client_factory or default_factory
 
     # 列出处理器。
+    # English: List handler.
     async def list_handler(ctx, params) -> mcp_types.ListToolsResult:
         tools = [
             mcp_types.Tool(
@@ -140,6 +145,7 @@ def build_app(
         return mcp_types.ListToolsResult(tools=tools)
 
     # 处理`call`处理器相关逻辑。
+    # English: Handle call handler operations.
     async def call_handler(ctx, params) -> mcp_types.CallToolResult:
         entry = TOOL_HANDLERS.get(params.name)
         if entry is None:
@@ -178,6 +184,7 @@ def build_app(
     )
 
     # 处理`lifespan`相关逻辑。
+    # English: Handle lifespan operations.
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # 父应用是子应用 MCP 会话管理器的唯一驱动方（mount 不传播 lifespan）
@@ -187,6 +194,7 @@ def build_app(
     app = FastAPI(title="im-tools-mcp", lifespan=lifespan)
 
     # 处理健康状态相关逻辑。
+    # English: Handle health operations.
     @app.get("/health")
     async def health() -> dict[str, bool]:
         return {"ok": True}

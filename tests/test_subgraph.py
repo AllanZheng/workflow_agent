@@ -18,6 +18,7 @@ nodes:
 
 
 # 执行写入对应的流程。
+# English: Write the current operation.
 def _write(path, text):
     path.write_text(text, encoding="utf-8")
     return path
@@ -25,6 +26,7 @@ def _write(path, text):
 
 class TestSubgraph:
     # 验证“`subgraph`输出`wrapped`输出密钥”场景下的预期行为。
+    # English: Verify subgraph output wrapped in output key.
     def test_subgraph_output_wrapped_in_output_key(self, tmp_path):
         child = _write(tmp_path / "child.yaml", CHILD_YAML)
         spec = load_spec(
@@ -45,6 +47,7 @@ class TestSubgraph:
         assert final["vars"]["sub"]["child_out"] == "子图处理了:任务A"
 
     # 验证“`subgraph``vars``merged`不包含输出密钥”场景下的预期行为。
+    # English: Verify subgraph vars merged without output key.
     def test_subgraph_vars_merged_without_output_key(self, tmp_path):
         child = _write(tmp_path / "child.yaml", CHILD_YAML)
         spec = load_spec(
@@ -64,6 +67,7 @@ class TestSubgraph:
         assert final["vars"]["x"] == "B"  # 子图输入回传合并
 
     # 验证“`parent`消费`subgraph`输出”场景下的预期行为。
+    # English: Verify parent consumes subgraph output.
     def test_parent_consumes_subgraph_output(self, tmp_path):
         child = _write(tmp_path / "child.yaml", CHILD_YAML)
         spec = load_spec(
@@ -88,6 +92,7 @@ class TestSubgraph:
         final = WorkflowEngine(spec, MockLLM()).run({"x": "C"})
         assert final["vars"]["final"] == "父级收到:子图处理了:C"
 
+    # English: Verify subgraph gets LLM from global factory.
     def test_subgraph_gets_llm_from_global_factory(self, tmp_path):
         """子图引擎未显式传 LLM，自动走 create_llm()（无 key → Mock）。"""
         child_yaml = (
@@ -118,6 +123,7 @@ class TestSubgraph:
         assert final["vars"]["sub"]["out"] == "子图LLM输出"
 
     # 验证“`yaml`文件加载解析`relative`路径”场景下的预期行为。
+    # English: Verify yaml file load resolves relative path.
     def test_yaml_file_load_resolves_relative_path(self, tmp_path):
         _write(tmp_path / "child.yaml", CHILD_YAML)
         parent = _write(
@@ -140,6 +146,7 @@ class TestSubgraph:
 
 class TestCycleProtection:
     # 处理`cycle`相关逻辑。
+    # English: Handle cycle operations.
     def _cycle(self, tmp_path, a_text, b_text):
         _write(tmp_path / "a.yaml", a_text)
         _write(tmp_path / "b.yaml", b_text)
@@ -147,6 +154,7 @@ class TestCycleProtection:
             load_spec_file(tmp_path / "a.yaml")
 
     # 验证“`self``reference`”场景下的预期行为。
+    # English: Verify self reference.
     def test_self_reference(self, tmp_path):
         self._cycle(
             tmp_path,
@@ -160,11 +168,13 @@ class TestCycleProtection:
         )
 
     # 验证“`mutual``reference`”场景下的预期行为。
+    # English: Verify mutual reference.
     def test_mutual_reference(self, tmp_path):
         wf = "workflow: {{name: {n}, start: n}}\nnodes:\n  n:\n    type: workflow\n    workflow_file: {other}.yaml\n    next: END\n"
         self._cycle(tmp_path, wf.format(n="a", other="b"), wf.format(n="b", other="a"))
 
     # 验证“缺失`child`文件”场景下的预期行为。
+    # English: Verify missing child file.
     def test_missing_child_file(self, tmp_path):
         parent = _write(
             tmp_path / "p.yaml",
@@ -179,6 +189,7 @@ class TestCycleProtection:
             load_spec_file(parent)
 
     # 验证“工作流节点校验必需的工作流文件”场景下的预期行为。
+    # English: Verify workflow node requires workflow file.
     def test_workflow_node_requires_workflow_file(self):
         with pytest.raises(ConfigError):
             load_spec(
@@ -220,6 +231,7 @@ class TestSubgraphHumanPropagation:
     """4.4：子图 human 中断提升到父图，同一父 thread_id 完成恢复。"""
 
     # 处理`parent``spec`相关逻辑。
+    # English: Handle parent spec operations.
     def _parent_spec(self, child_path):
         return load_spec({
             "workflow": {"name": "parent_hitl", "start": "sub"},
@@ -234,6 +246,7 @@ class TestSubgraphHumanPropagation:
         })
 
     # 验证“`subgraph``human``pauses``parent`”场景下的预期行为。
+    # English: Verify subgraph human pauses parent.
     def test_subgraph_human_pauses_parent(self, tmp_path):
         child = _write(tmp_path / "child_hitl.yaml", CHILD_WITH_HUMAN)
         eng = WorkflowEngine(self._parent_spec(child), MockLLM())
@@ -245,6 +258,7 @@ class TestSubgraphHumanPropagation:
         assert payload.get("workflow_node") == "sub"
 
     # 验证“`resume`包含相同`parent``thread`完成”场景下的预期行为。
+    # English: Verify resume with same parent thread completes.
     def test_resume_with_same_parent_thread_completes(self, tmp_path):
         child = _write(tmp_path / "child_hitl.yaml", CHILD_WITH_HUMAN)
         eng = WorkflowEngine(self._parent_spec(child), MockLLM())
@@ -254,6 +268,7 @@ class TestSubgraphHumanPropagation:
         assert final["vars"]["sub"]["child_out"] == "子图批准:任务C"
 
     # 验证“`resume`拒绝路由`subgraph`”场景下的预期行为。
+    # English: Verify resume reject routes in subgraph.
     def test_resume_reject_routes_in_subgraph(self, tmp_path):
         child = _write(tmp_path / "child_hitl.yaml", CHILD_WITH_HUMAN)
         eng = WorkflowEngine(self._parent_spec(child), MockLLM())
@@ -261,6 +276,7 @@ class TestSubgraphHumanPropagation:
         final = eng.resume("拒绝", thread_id="ph3")
         assert final["vars"]["sub"]["child_out"] == "子图拒绝:任务D"
 
+    # English: Verify invalid answer reasks then completes.
     def test_invalid_answer_reasks_then_completes(self, tmp_path):
         """options 强校验在子图传播链路上同样生效。"""
         child = _write(tmp_path / "child_hitl.yaml", CHILD_WITH_HUMAN)

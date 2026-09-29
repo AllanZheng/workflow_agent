@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 
+# English: Select flow.
 def select_flow(config: Any, spec: Any = None) -> str:
     """按技术方案 §4.4 的规则选择 flow 名称。
 

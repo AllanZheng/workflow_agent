@@ -7,10 +7,12 @@ from flowagent.execution_authorization import AuthorizationError, DemoModelAutho
 
 
 # 验证“`authorizer``posts`执行代次与模型版本包含`scoped`身份”场景下的预期行为。
+# English: Verify authorizer posts execution generation and model version with scoped identity.
 def test_authorizer_posts_execution_generation_and_model_version_with_scoped_identity():
     captured = {}
 
     # 处理处理器相关逻辑。
+    # English: Handle handler operations.
     def handler(request):
         captured["url"] = str(request.url)
         captured["headers"] = dict(request.headers)
@@ -46,6 +48,7 @@ def test_authorizer_posts_execution_generation_and_model_version_with_scoped_ide
 
 
 # 验证“`authorizer`标记失败`closed`不包含`reflecting``remote`错误内容体”场景下的预期行为。
+# English: Verify authorizer fails closed without reflecting remote error body.
 @pytest.mark.parametrize("response", [
     httpx.Response(403, json={"authorized": False}),
     httpx.Response(503, json={"error": "backend-secret"}),
@@ -69,6 +72,7 @@ def test_authorizer_fails_closed_without_reflecting_remote_error_body(response):
 
 
 # 验证“`authorizer`拒绝响应针对`rotated`模型凭据”场景下的预期行为。
+# English: Verify authorizer rejects a response for a rotated model credential.
 def test_authorizer_rejects_a_response_for_a_rotated_model_credential():
     authorizer = DemoModelAuthorizer(
         "https://demo.test/internal/model-authorization", "execution-secret",
@@ -85,6 +89,7 @@ def test_authorizer_rejects_a_response_for_a_rotated_model_credential():
 
 
 # 验证“`authorized`模型检查之前`each``bound`模型请求”场景下的预期行为。
+# English: Verify authorized model checks before each bound model request.
 def test_authorized_model_checks_before_each_bound_model_request():
     from flowagent.execution_authorization import AuthorizedChatModel
 
@@ -92,17 +97,20 @@ def test_authorized_model_checks_before_each_bound_model_request():
 
     class Authorizer:
         # 执行授权对应的流程。
+        # English: Handle authorize operations.
         async def authorize(self, **kwargs):
             events.append(("authorize", kwargs["generation"]))
             return object()
 
     class Model:
         # 处理`bind`工具相关逻辑。
+        # English: Handle bind tools operations.
         def bind_tools(self, tools):
             events.append(("bind", len(tools)))
             return self
 
         # 处理`ainvoke`相关逻辑。
+        # English: Handle ainvoke operations.
         async def ainvoke(self, messages):
             events.append(("request", messages))
             return "ok"
@@ -120,6 +128,7 @@ def test_authorized_model_checks_before_each_bound_model_request():
 
 
 # 验证“`authorized`模型`does`不发送请求之后`pre``call``denial`”场景下的预期行为。
+# English: Verify authorized model does not send request after pre call denial.
 def test_authorized_model_does_not_send_request_after_pre_call_denial():
     from flowagent.execution_authorization import AuthorizedChatModel
 
@@ -127,11 +136,13 @@ def test_authorized_model_does_not_send_request_after_pre_call_denial():
 
     class DenyingAuthorizer:
         # 执行授权对应的流程。
+        # English: Handle authorize operations.
         async def authorize(self, **kwargs):
             raise AuthorizationError("model_authorization_denied")
 
     class Model:
         # 处理`ainvoke`相关逻辑。
+        # English: Handle ainvoke operations.
         async def ainvoke(self, messages):
             requests.append(messages)
             return "must not run"

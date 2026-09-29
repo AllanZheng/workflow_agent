@@ -60,17 +60,20 @@ ERROR_SPEC = {
 
 class TestBuildGraph:
     # 验证“构建`returns``compiled`图”场景下的预期行为。
+    # English: Verify build returns compiled graph.
     def test_build_returns_compiled_graph(self):
         spec = load_spec(LOOP_SPEC)
         graph = build_graph(spec, MockLLM())
         assert graph is not None
 
     # 验证“构建校验必需的`spec`”场景下的预期行为。
+    # English: Verify build requires spec.
     def test_build_requires_spec(self):
         with pytest.raises(AttributeError):
             build_graph(None, MockLLM())  # type: ignore[arg-type]
 
     # 验证“构建图`auto`创建大语言模型”场景下的预期行为。
+    # English: Verify build graph auto creates LLM.
     def test_build_graph_auto_creates_llm(self, monkeypatch):
         # 不传 llm 时引擎应自动走 create_llm()（无 key 环境 → MockLLM）
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -80,6 +83,7 @@ class TestBuildGraph:
 
 class TestLoopGuard:
     # 验证“`max``loops``caps`执行”场景下的预期行为。
+    # English: Verify max loops caps execution.
     def test_max_loops_caps_execution(self):
         engine = WorkflowEngine(load_spec(LOOP_SPEC), MockLLM())
         final = engine.run({"count": 0})
@@ -93,6 +97,7 @@ class TestLoopGuard:
 
 class TestErrorDegrade:
     # 验证“启用错误路由`fallback`”场景下的预期行为。
+    # English: Verify on error routes to fallback.
     def test_on_error_routes_to_fallback(self):
         engine = WorkflowEngine(load_spec(ERROR_SPEC), MockLLM())
         final = engine.run({"ticket": "请触发故障"})
@@ -102,6 +107,7 @@ class TestErrorDegrade:
         assert final["trace"][0]["status"] == "error"
 
     # 验证“工具`success`无错误”场景下的预期行为。
+    # English: Verify tool success no error.
     def test_tool_success_no_error(self):
         engine = WorkflowEngine(load_spec(ERROR_SPEC), MockLLM())
         final = engine.run({"ticket": "正常输入"})
@@ -110,6 +116,7 @@ class TestErrorDegrade:
         assert final["vars"]["msg"] == "已转人工（处理结果：processed:正常输入）"
 
     # 验证“`failure`不包含启用错误`propagates`”场景下的预期行为。
+    # English: Verify failure without on error propagates.
     def test_failure_without_on_error_propagates(self):
         spec = {
             "workflow": {"name": "err2", "start": "break"},
@@ -130,6 +137,7 @@ class TestErrorDegrade:
 
 class TestCheckpoint:
     # 验证“状态`persisted`按`thread`标识”场景下的预期行为。
+    # English: Verify state persisted by thread ID.
     def test_state_persisted_by_thread_id(self):
         spec = load_spec(LOOP_SPEC)
         engine = WorkflowEngine(spec, MockLLM())
@@ -139,6 +147,7 @@ class TestCheckpoint:
         assert snap["loop_counts"]["bump"] == 3
 
     # 验证“`rerun`相同`thread`标识合并状态”场景下的预期行为。
+    # English: Verify rerun same thread ID merges state.
     def test_rerun_same_thread_id_merges_state(self):
         spec = load_spec(LOOP_SPEC)
         engine = WorkflowEngine(spec, MockLLM())
@@ -151,6 +160,7 @@ class TestCheckpoint:
 
 class TestMermaid:
     # 验证“`mermaid``contains`节点”场景下的预期行为。
+    # English: Verify mermaid contains nodes.
     def test_mermaid_contains_nodes(self):
         engine = WorkflowEngine(load_spec(LOOP_SPEC), MockLLM())
         text = engine.mermaid()

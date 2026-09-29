@@ -28,6 +28,7 @@ class RuntimeUsage:
 
 class ManagedAgentRuntime:
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, llm, mcp_client=None, *, skills=None, skill_loader=None,
                  execution_id: str | None = None, generation: int | None = None) -> None:
         self.llm = llm
@@ -44,6 +45,7 @@ class ManagedAgentRuntime:
         self._loaded_skill_bodies: dict[str, str] = {}
 
     # 记录技能加载。
+    # English: Record skill load.
     def _record_skill_load(self, tool_name: str, result) -> None:
         if tool_name != "platform_load_skill" or not isinstance(result, dict):
             return
@@ -60,6 +62,7 @@ class ManagedAgentRuntime:
             self.loaded_skills.append(loaded)
 
     # 处理`setup`相关逻辑。
+    # English: Handle setup operations.
     async def _setup(self, message: str, system_prompt: str, history: list[dict] | None):
         # 受管 Agent 可显式禁用工具：纯文本工作流不应为了取得一个空列表
         # 而依赖 MCP 服务。调用方负责拒绝半配置的 MCP（endpoint/token 仅其一）。
@@ -107,6 +110,7 @@ class ManagedAgentRuntime:
         return allowed, schemas, messages
 
     # 处理`system`提示词包含技能摘要相关逻辑。
+    # English: Handle system prompt with skill summaries operations.
     def _system_prompt_with_skill_summaries(self, system_prompt: str) -> str:
         sections = [system_prompt.strip()] if system_prompt.strip() else []
         if self.skills:
@@ -119,6 +123,7 @@ class ManagedAgentRuntime:
         return "\n\n".join(sections)
 
     # 加载技能。
+    # English: Load skill.
     async def _load_skill(self, skill_id: str) -> str:
         skill = self._skills_by_id.get(skill_id)
         if skill is None:
@@ -163,6 +168,7 @@ class ManagedAgentRuntime:
         return body
 
     # 处理`call`工具相关逻辑。
+    # English: Handle call tool operations.
     async def _call_tool(self, call: dict, allowed: set[str]) -> str | _GroupSelectionRequired:
         name = call["name"]
         if name not in allowed:
@@ -202,6 +208,7 @@ class ManagedAgentRuntime:
         return str(result)
 
     # 处理技能加载错误相关逻辑。
+    # English: Handle skill load error operations.
     def _skill_load_error(self, skill_id: str, error_code: str) -> str:
         skill = self._skills_by_id.get(skill_id)
         if skill is not None:
@@ -216,6 +223,7 @@ class ManagedAgentRuntime:
         return "That Skill is not bound to this execution; continue without it."
 
     # 执行当前任务流程并返回运行结果。
+    # English: Run the current operation.
     async def run(self, message: str, system_prompt: str,
                   max_tool_iterations: int,
                   history: list[dict] | None = None) -> str:
@@ -240,6 +248,7 @@ class ManagedAgentRuntime:
                 messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
         raise ToolIterationLimit("managed agent tool iteration limit exceeded")
 
+    # English: Handle stream operations.
     async def stream(self, message: str, system_prompt: str,
                      max_tool_iterations: int,
                      history: list[dict] | None = None):

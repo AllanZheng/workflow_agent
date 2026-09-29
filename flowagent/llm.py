@@ -26,14 +26,17 @@ class MockLLM:
     name = "mock"
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, default: str = MOCK_DEFAULT_REPLY):
         self.default = default
 
     # 处理`invoke`相关逻辑。
+    # English: Handle invoke operations.
     def invoke(self, messages: list[BaseMessage], config=None, **kwargs) -> AIMessage:
         return AIMessage(content=self.default)
 
 
+# English: Create LLM.
 def create_llm(provider: str | None = None):
     """根据 provider/环境变量创建 LLM 客户端。
 

@@ -45,15 +45,18 @@ _request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 
 # ---------------------------------------------------------------- trace 上下文
 
+# English: Return request ID.
 def get_request_id() -> str | None:
     return _request_id_var.get()
 
 
 # 处理新建请求标识相关逻辑。
+# English: Handle new request ID operations.
 def new_request_id() -> str:
     return uuid.uuid4().hex
 
 
+# English: Handle trace context operations.
 @contextmanager
 def trace_context(tid: str | None = None):
     """后台任务包裹用：进入设置 trace id，退出恢复先前值。"""
@@ -64,6 +67,7 @@ def trace_context(tid: str | None = None):
         _request_id_var.reset(token)
 
 
+# English: Handle bootstrap trace from env operations.
 def bootstrap_trace_from_env() -> str | None:
     """进程级 trace：读取 TRACE_ID 环境变量（由拉起方注入），非法则忽略。"""
     tid = os.environ.get("TRACE_ID", "").strip()
@@ -78,6 +82,7 @@ class _RequestIdFilter(logging.Filter):
     """把当前 contextvar 的 request_id 写进每条记录（handler 级，双 handler 共用）。"""
 
     # 执行筛选对应的流程。
+    # English: Handle filter operations.
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = _request_id_var.get() or "-"
         return True
@@ -93,16 +98,19 @@ class _DynamicStreamHandler(logging.StreamHandler):
     """
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, stream_name: str) -> None:
         logging.Handler.__init__(self)   # 跳过 StreamHandler 的流绑定
         self._stream_name = stream_name  # "stdout" / "stderr"
 
     # 执行流式处理对应的流程。
+    # English: Handle stream operations.
     @property
     def stream(self):                    # 每次取当前流对象
         return getattr(sys, self._stream_name)
 
     # 执行流式处理对应的流程。
+    # English: Handle stream operations.
     @stream.setter
     def stream(self, value) -> None:     # StreamHandler.__init__ 会赋值，忽略
         pass
@@ -110,6 +118,7 @@ class _DynamicStreamHandler(logging.StreamHandler):
 
 class _TextFormatter(logging.Formatter):
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, service: str) -> None:
         super().__init__(
             fmt=f"%(asctime)s %(levelname)s [{service}] "
@@ -119,11 +128,13 @@ class _TextFormatter(logging.Formatter):
 
 class _JsonFormatter(logging.Formatter):
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, service: str) -> None:
         super().__init__()
         self._service = service
 
     # 执行格式化对应的流程。
+    # English: Format the current operation.
     def format(self, record: logging.LogRecord) -> str:
         payload = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created))
@@ -142,6 +153,7 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
+# English: Handle setup logging operations.
 def setup_logging(service: str, *, level: str | None = None,
                   force: bool = False) -> None:
     """装配双 handler 并降噪。幂等：已装配则只更新级别。
@@ -184,11 +196,13 @@ class RequestIdMiddleware:
     """
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, app) -> None:
         self.app = app
         self.logger = logging.getLogger("obs.request")
 
     # 执行对象封装的可调用逻辑。
+    # English: Invoke the object as a callable.
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -207,6 +221,7 @@ class RequestIdMiddleware:
                         "path": scope.get("path")}
 
         # 执行发送对应的流程。
+        # English: Handle send operations.
         async def _send(message):
             if message["type"] == "http.response.start":
                 fields["status"] = message["status"]
@@ -243,6 +258,7 @@ class RequestIdMiddleware:
 
 # ---------------------------------------------------------------- httpx 传播
 
+# English: Attach trace header.
 async def _attach_trace_header(request) -> None:
     """httpx.AsyncClient 的 request 钩子必须是协程函数（httpx 会 await 它）。"""
     rid = _request_id_var.get()
@@ -250,6 +266,7 @@ async def _attach_trace_header(request) -> None:
         request.headers["X-Request-ID"] = rid
 
 
+# English: Install trace hook.
 def install_trace_hook(client) -> None:
     """给已有 httpx 客户端补 request 钩子（幂等）。"""
     hooks = list(client.event_hooks.get("request", []))
@@ -258,6 +275,7 @@ def install_trace_hook(client) -> None:
     client.event_hooks["request"] = hooks
 
 
+# English: Handle traced client operations.
 def traced_client(**kwargs):
     """构造自动附 X-Request-ID 的 httpx.AsyncClient。"""
     import httpx                     # 延迟导入：无 httpx 环境不影响模块加载

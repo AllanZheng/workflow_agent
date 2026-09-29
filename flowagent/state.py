@@ -15,6 +15,7 @@ from typing import Annotated, TypedDict
 _MAX_TRACE_ENTRIES = 200
 
 
+# English: Handle merge dict operations.
 def merge_dict(left: dict | None, right: dict | None) -> dict:
     """LangGraph reducer：右侧更新合并进左侧（None 安全）。"""
     if left is None:
@@ -24,6 +25,7 @@ def merge_dict(left: dict | None, right: dict | None) -> dict:
     return {**left, **right}
 
 
+# English: Handle bounded trace operations.
 def bounded_trace(left: list | None, right: list | None) -> list:
     """追加式 reducer，但只保留最近 _MAX_TRACE_ENTRIES 条。"""
     combined = list(left or []) + list(right or [])
@@ -32,6 +34,7 @@ def bounded_trace(left: list | None, right: list | None) -> list:
     return combined
 
 
+# English: Handle last write operations.
 def last_write(_left: dict | None, right: dict | None) -> dict | None:
     """error 的 reducer：单写者场景等价于旧的隐式覆盖；同一 super-step 内
     两个并行分支都写入时，避免 LangGraph 因无 reducer 而抛 InvalidUpdateError。"""

@@ -29,6 +29,7 @@ from .state import WFState
 
 
 # 打开PostgreSQL检查点存储。
+# English: Open postgres checkpointer.
 @asynccontextmanager
 async def open_postgres_checkpointer(dsn: str | None = None) -> AsyncIterator[object]:
     """Open and initialize the async PostgreSQL saver for one app lifespan.
@@ -73,6 +74,7 @@ _RECURSION_HINT = (
 )
 
 
+# English: Create checkpointer.
 def make_checkpointer(setting: str | None = None):
     """创建检查点；调用方负责关闭 PostgreSQL saver 连接。"""
     setting = (setting or os.getenv("FLOWAGENT_CHECKPOINT", "postgres")).strip().lower()
@@ -88,15 +90,18 @@ def make_checkpointer(setting: str | None = None):
 
 
 # 执行解析对应的流程。
+# English: Resolve the current operation.
 def _resolve(target: str):
     return END if target == "END" else target
 
 
+# English: Handle route path map operations.
 def _route_path_map(route: RouteConfig, error_goto: str | None = None) -> dict:
     """条件边所有可能的返回值 -> 节点名映射（LangGraph 用它做静态校验）。"""
     mapping: dict = {}
 
     # 执行添加对应的流程。
+    # English: Add the current operation.
     def add(target: str | None):
         if target:
             mapping[target] = _resolve(target)
@@ -110,12 +115,14 @@ def _route_path_map(route: RouteConfig, error_goto: str | None = None) -> dict:
     return mapping
 
 
+# English: Handle fixed or error operations.
 def _fixed_or_error(node_name: str, normal_targets, error_goto: str):
     """固定 next（字符串/并行列表）的错误改道路由：正常走原目标，错误走 goto。
 
     返回值保持原类型（列表 = 并行扇出），错误时改道单个 goto 目标。
     """
     # 处理`router`相关逻辑。
+    # English: Handle router operations.
     def router(state: dict):
         err = state.get("error")
         if err and err.get("node") == node_name:
@@ -125,6 +132,7 @@ def _fixed_or_error(node_name: str, normal_targets, error_goto: str):
     return router
 
 
+# English: Build graph.
 def build_graph(spec: WorkflowSpec, llm=None, checkpointer=None, hooks=None, agent_runtime=None,
                 stream_final_reply: bool = False):
     """将 WorkflowSpec 编译为可执行的 LangGraph CompiledStateGraph。"""
@@ -183,6 +191,7 @@ class WorkflowEngine:
     """工作流引擎门面：编译一次，多次运行/恢复/流式。"""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, spec: WorkflowSpec, llm=None, checkpointer=None, hooks=None):
         self.spec = spec
         self.llm = llm if llm is not None else create_llm()
@@ -196,19 +205,23 @@ class WorkflowEngine:
             self.close()
             raise
 
+    # English: Close the current operation.
     def close(self):
         """只释放引擎创建的连接；注入 saver 由调用方管理。"""
         if self._owns_checkpointer and hasattr(self.checkpointer, "close"):
             self.checkpointer.close()
 
     # 进入上下文并准备所需资源。
+    # English: Enter the context and return its resource.
     def __enter__(self):
         return self
 
     # 退出上下文并释放所持资源。
+    # English: Exit the context and release its resource.
     def __exit__(self, *exc):
         self.close()
 
+    # English: Handle aresume operations.
     async def aresume(self, value, thread_id: str) -> dict:
         """异步恢复人工中断。"""
         try:
@@ -218,23 +231,27 @@ class WorkflowEngine:
         except GraphRecursionError as e:
             raise self._wrap_recursion() from e
 
+    # English: Handle aget state operations.
     async def aget_state(self, thread_id: str):
         """异步读取持久化状态。"""
         return await self.graph.aget_state(self._config(thread_id))
 
     # 处理配置相关逻辑。
+    # English: Handle config operations.
     def _config(self, thread_id: str) -> dict:
         return {
             "configurable": {"thread_id": thread_id},
             "recursion_limit": self.spec.workflow.recursion_limit,
         }
 
+    # English: Handle wrap recursion operations.
     def _wrap_recursion(self) -> FlowAgentError:
         """构造带修复建议的业务异常；原始因果链由调用处 raise ... from 建立。"""
         return FlowAgentError(
             _RECURSION_HINT.format(limit=self.spec.workflow.recursion_limit)
         )
 
+    # English: Run the current operation.
     def run(self, inputs: dict | None = None, thread_id: str | None = None) -> dict:
         """运行工作流，返回最终状态（含 vars/trace/loop_counts/error）。
 
@@ -250,6 +267,7 @@ class WorkflowEngine:
         except GraphRecursionError as e:
             raise self._wrap_recursion() from e
 
+    # English: Handle resume operations.
     def resume(self, value, thread_id: str) -> dict:
         """恢复一次因 human 节点而暂停的运行（LangGraph Command(resume=...)）。"""
         try:
@@ -261,6 +279,7 @@ class WorkflowEngine:
         except GraphRecursionError as e:
             raise self._wrap_recursion() from e
 
+    # English: Handle stream operations.
     def stream(self, inputs: dict | None = None, thread_id: str | None = None):
         """逐步产出执行后的完整状态（stream_mode="values"），供 CLI/前端实时展示。"""
         tid = thread_id or uuid.uuid4().hex
@@ -275,6 +294,7 @@ class WorkflowEngine:
         except GraphRecursionError as e:
             raise self._wrap_recursion() from e
 
+    # English: Handle arun operations.
     async def arun(self, inputs: dict | None = None, thread_id: str | None = None) -> dict:
         """异步运行（语义同 run），适合 FastAPI 等异步服务。"""
         tid = thread_id or uuid.uuid4().hex
@@ -286,6 +306,7 @@ class WorkflowEngine:
         except GraphRecursionError as e:
             raise self._wrap_recursion() from e
 
+    # English: Handle astream operations.
     async def astream(self, inputs: dict | None = None, thread_id: str | None = None):
         """异步流式（语义同 stream）。"""
         tid = thread_id or uuid.uuid4().hex
@@ -301,6 +322,7 @@ class WorkflowEngine:
         except GraphRecursionError as e:
             raise self._wrap_recursion() from e
 
+    # English: Handle waiting on operations.
     @staticmethod
     def waiting_on(final: dict):
         """运行处于暂停（等待人工输入）时返回 interrupt 载荷，否则 None。"""
@@ -311,6 +333,7 @@ class WorkflowEngine:
                 return getattr(first, "value", first)
         return None
 
+    # English: Handle pending payload operations.
     @staticmethod
     def pending_payload(snapshot):
         """从检查点快照提取待恢复的 interrupt 载荷（无则 None）。"""
@@ -319,10 +342,12 @@ class WorkflowEngine:
                 return getattr(intr, "value", None)
         return None
 
+    # English: Return state.
     def get_state(self, thread_id: str):
         """读取某次运行的检查点状态（演示 checkpoint 持久化）。"""
         return self.graph.get_state({"configurable": {"thread_id": thread_id}})
 
+    # English: Handle mermaid operations.
     def mermaid(self) -> str:
         """导出 Mermaid 图源码，便于文档化与可视化。"""
         return self.graph.get_graph().draw_mermaid()

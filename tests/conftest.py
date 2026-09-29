@@ -6,17 +6,20 @@ from flowagent.llm import MockLLM
 
 
 # 处理`mock`大语言模型相关逻辑。
+# English: Handle mock LLM operations.
 @pytest.fixture
 def mock_llm() -> MockLLM:
     return MockLLM()
 
 
 # 处理`project``root`相关逻辑。
+# English: Project root.
 @pytest.fixture
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+# English: Handle suite tool allowlist operations.
 @pytest.fixture(autouse=True)
 def _suite_tool_allowlist(monkeypatch):
     """测试套件默认白名单：内置工具 + tests 辅助模块。
@@ -27,6 +30,7 @@ def _suite_tool_allowlist(monkeypatch):
     monkeypatch.setenv("FLOWAGENT_TOOL_MODULES", "flowagent.tools,tests")
 
 
+# English: Handle suite mock LLM operations.
 @pytest.fixture(autouse=True)
 def _suite_mock_llm(request, monkeypatch):
     """测试套件默认 Mock 模式：屏蔽外部 LLM 环境变量（OPENAI_API_KEY / FLOWAGENT_LLM）。
@@ -42,12 +46,14 @@ def _suite_mock_llm(request, monkeypatch):
     monkeypatch.setenv("FLOWAGENT_LLM", "auto")
 
 
+# English: Handle suite memory checkpoint operations.
 @pytest.fixture(autouse=True)
 def _suite_memory_checkpoint(monkeypatch):
     """单元测试显式使用内存；生产默认 PostgreSQL。"""
     monkeypatch.setenv("FLOWAGENT_CHECKPOINT", "memory")
 
 
+# English: Handle isolated postgres operations.
 @pytest.fixture(autouse=True)
 def _isolated_postgres(request, monkeypatch):
     """持久化测试使用隔离 schema 并清理。"""
@@ -71,6 +77,7 @@ def _isolated_postgres(request, monkeypatch):
 
 
 # 处理`drop`结构相关逻辑。
+# English: Handle drop schema operations.
 def _drop_schema(dsn, schema):
     import psycopg
 

@@ -21,6 +21,7 @@ class AuthorizationDecision:
 
 class ModelAuthorizer(Protocol):
     # 执行授权对应的流程。
+    # English: Handle authorize operations.
     async def authorize(
         self, *, execution_id: str, model_version_id: str, generation: int,
     ) -> AuthorizationDecision: ...
@@ -30,6 +31,7 @@ class DemoModelAuthorizer:
     """HTTP client for Demo's execution-scoped model-authorization contract."""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, url: str, execution_token: str, runtime_id: str, *,
                  credential_generation: int | None = None,
                  timeout_seconds: float = 3.0, transport: httpx.AsyncBaseTransport | None = None):
@@ -45,10 +47,12 @@ class DemoModelAuthorizer:
         self._transport = transport
 
     # 生成对象的调试表示。
+    # English: Return a developer-oriented representation of the object.
     def __repr__(self) -> str:
         return f"DemoModelAuthorizer(url={self._url!r}, timeout_seconds={self._timeout_seconds!r})"
 
     # 执行授权对应的流程。
+    # English: Handle authorize operations.
     async def authorize(
         self, *, execution_id: str, model_version_id: str, generation: int,
     ) -> AuthorizationDecision:
@@ -98,6 +102,7 @@ class AuthorizedChatModel:
     """Small proxy that checks Demo immediately before each actual model request."""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, model: Any, authorizer: ModelAuthorizer, *, execution_id: str,
                  model_version_id: str, generation: int):
         self._model = model
@@ -107,6 +112,7 @@ class AuthorizedChatModel:
         self._generation = generation
 
     # 处理`bind`工具相关逻辑。
+    # English: Handle bind tools operations.
     def bind_tools(self, tools: list[dict[str, Any]]):
         return AuthorizedChatModel(
             self._model.bind_tools(tools), self._authorizer,
@@ -116,6 +122,7 @@ class AuthorizedChatModel:
         )
 
     # 执行授权对应的流程。
+    # English: Handle authorize operations.
     async def _authorize(self) -> None:
         await self._authorizer.authorize(
             execution_id=self._execution_id,
@@ -124,16 +131,19 @@ class AuthorizedChatModel:
         )
 
     # 处理`ainvoke`相关逻辑。
+    # English: Handle ainvoke operations.
     async def ainvoke(self, *args: Any, **kwargs: Any):
         await self._authorize()
         return await self._model.ainvoke(*args, **kwargs)
 
     # 处理`astream`相关逻辑。
+    # English: Handle astream operations.
     async def astream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
         await self._authorize()
         async for chunk in self._model.astream(*args, **kwargs):
             yield chunk
 
     # 处理`getattr`相关逻辑。
+    # English: Handle getattr operations.
     def __getattr__(self, name: str) -> Any:
         return getattr(self._model, name)

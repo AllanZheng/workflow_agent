@@ -20,12 +20,14 @@ SPEC = {
 
 
 # 处理`anyio``backend`相关逻辑。
+# English: Handle anyio backend operations.
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
 
 
 # 验证“`arun``returns``final`状态”场景下的预期行为。
+# English: Verify arun returns final state.
 async def test_arun_returns_final_state():
     engine = WorkflowEngine(load_spec(SPEC))
     final = await engine.arun({"x": "异步"}, thread_id="ax1")
@@ -35,6 +37,7 @@ async def test_arun_returns_final_state():
 
 
 # 验证“`astream``yields``steps`”场景下的预期行为。
+# English: Verify astream yields steps.
 async def test_astream_yields_steps():
     engine = WorkflowEngine(load_spec(SPEC))
     chunks = [chunk async for chunk in engine.astream({"x": "流"}, thread_id="ax2")]
@@ -43,6 +46,7 @@ async def test_astream_yields_steps():
 
 
 # 验证“追踪纳入`duration``ms`”场景下的预期行为。
+# English: Verify trace includes duration ms.
 def test_trace_includes_duration_ms():
     engine = WorkflowEngine(load_spec(SPEC))
     final = engine.run({"x": "计时"})

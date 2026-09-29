@@ -32,12 +32,14 @@ YAML_PATH = Path(__file__).resolve().parents[1] / "configs" / "managed" / "group
 
 
 # 处理`yaml`文本相关逻辑。
+# English: Handle yaml text operations.
 @pytest.fixture(scope="module")
 def yaml_text() -> str:
     return YAML_PATH.read_text(encoding="utf-8")
 
 
 # 处理`spec`相关逻辑。
+# English: Handle spec operations.
 @pytest.fixture(scope="module")
 def spec(yaml_text):
     return load_managed_spec(yaml_text)
@@ -45,6 +47,7 @@ def spec(yaml_text):
 
 # ---------------------------------------------------------------- 受管门禁
 
+# English: Verify strict check passes.
 def test_strict_check_passes():
     """flowagent check --strict：引用完整性 + 子图检查（阶段 0 结论固化）。"""
     result = subprocess.run(
@@ -56,6 +59,7 @@ def test_strict_check_passes():
     assert "引用分析通过" in result.stdout
 
 
+# English: Verify managed gate accepts yaml.
 def test_managed_gate_accepts_yaml(yaml_text):
     """受管门禁：只含 agent/llm/template 三类节点，load_managed_spec 必须接受。"""
     managed = load_managed_spec(yaml_text)
@@ -63,12 +67,14 @@ def test_managed_gate_accepts_yaml(yaml_text):
     assert {node.type for node in managed.nodes.values()} <= {"agent", "llm", "template"}
 
 
+# English: Verify engine loads same yaml.
 def test_engine_loads_same_yaml(yaml_text):
     """引擎通用加载与受管加载一致（同一文件两个入口都合法）。"""
     assert load_spec(__import__("yaml").safe_load(yaml_text)).workflow.name == "group-analysis"
 
 
 # 验证“`old`修订版本`keeps`旧版路径”场景下的预期行为。
+# English: Verify old revision keeps legacy path.
 def test_old_revision_keeps_legacy_path(yaml_text):
     current = load_managed_spec(yaml_text)
     old_yaml = yaml_text.replace("  group_analysis_mode: deterministic\n", "")
@@ -79,6 +85,7 @@ def test_old_revision_keeps_legacy_path(yaml_text):
 
 # ------------------------------------------------------------ Admin 发布契约
 
+# English: Verify publication contract dry run.
 def test_publication_contract_dry_run(monkeypatch):
     """Admin 发布脚本 --dry-run：mcp_tools 注册 schema 与服务实现同源，
     快照 YAML 与 configs 文件逐字一致且过受管门禁（阶段 3 契约对拍）。"""
@@ -147,16 +154,19 @@ class ScriptedLLM:
     """按节点 prompt 关键字路由输出的可编程 LLM（llm 节点用）。"""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, outputs: dict[str, str], capture: list | None = None):
         self.outputs = outputs  # 关键字 -> 输出文本（先命中先出）
         self.capture = capture if capture is not None else []
 
     # 处理`invoke`相关逻辑。
+    # English: Handle invoke operations.
     def invoke(self, messages, config=None, **kwargs):
         prompt = str(messages[-1].content)
         self.capture.append(prompt)
         return AIMessage(content=self._route(prompt))
 
+    # English: Handle astream operations.
     async def astream(self, messages, config=None, **kwargs):
         """流式路径（report 节点）：按 8 字符切块产出，验证增量管线。"""
         prompt = str(messages[-1].content)
@@ -166,6 +176,7 @@ class ScriptedLLM:
             yield AIMessageChunk(content=text[i:i + 8])
 
     # 执行路由对应的流程。
+    # English: Handle route operations.
     def _route(self, prompt: str) -> str:
         for keyword, output in self.outputs.items():
             if keyword in prompt and output is not None:
@@ -183,6 +194,7 @@ class FakeAgentRuntime:
     """注入式 agent runtime：返回固定 digest 或抛错（fetch 节点用）。"""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, answer: str = "【分段纪要】正常纪要内容", error: Exception | None = None,
                  capture: list | None = None):
         self.answer = answer
@@ -190,6 +202,7 @@ class FakeAgentRuntime:
         self.capture = capture if capture is not None else []
 
     # 执行当前任务流程并返回运行结果。
+    # English: Run the current operation.
     async def run(self, message, system_prompt, max_tool_iterations, history=None):
         if self.capture is not None:
             self.capture.append({"message": message, "system": system_prompt})
@@ -198,6 +211,7 @@ class FakeAgentRuntime:
         return self.answer
 
     # 执行流式处理对应的流程。
+    # English: Handle stream operations.
     async def stream(self, message, system_prompt, max_tool_iterations, history=None):
         if self.error is not None:
             raise self.error
@@ -205,6 +219,7 @@ class FakeAgentRuntime:
 
 
 # 执行运行对应的流程。
+# English: Run the current operation.
 async def _run(spec, *, llm, agent_runtime, message="分析群X最近7天", history=None,
                stream=False):
     graph = build_graph(spec, llm=llm, checkpointer=False,
@@ -229,6 +244,7 @@ async def _run(spec, *, llm, agent_runtime, message="分析群X最近7天", hist
 
 
 # 处理`anyio``backend`相关逻辑。
+# English: Handle anyio backend operations.
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
@@ -236,6 +252,7 @@ def anyio_backend():
 
 # ---------------------------------------------------------------- parse_args
 
+# English: Verify parse args mock pipeline produces expected dict.
 async def test_parse_args_mock_pipeline_produces_expected_dict(spec):
     """MockLLM + mock_response：解析节点输出通过 schema 校验并进入 fetch。"""
     captured_fetch: list[dict] = []
@@ -254,6 +271,7 @@ async def test_parse_args_mock_pipeline_produces_expected_dict(spec):
     assert "分段纪要" in captured_fetch[0]["system"]
 
 
+# English: Verify parse args bad JSON fails closed to clarify.
 async def test_parse_args_bad_json_fails_closed_to_clarify(spec):
     """坏 JSON：retries 1 次后仍失败 → on_error → clarify，reply 为反问文案。"""
     llm = ScriptedLLM({"请输出解析结果 JSON": ["不是JSON", "还是不是JSON"]})
@@ -265,6 +283,7 @@ async def test_parse_args_bad_json_fails_closed_to_clarify(spec):
 
 # ---------------------------------------------------------------- fetch 路由
 
+# English: Verify fetch digest with failure marker routes to question.
 async def test_fetch_digest_with_failure_marker_routes_to_question(spec):
     runtime = FakeAgentRuntime("无法完成分析：未找到名为「X」的群，请确认群名")
     llm = ScriptedLLM({
@@ -277,6 +296,7 @@ async def test_fetch_digest_with_failure_marker_routes_to_question(spec):
 
 
 # 验证“获取`normal``digest`路由`stats`”场景下的预期行为。
+# English: Verify fetch normal digest routes to stats.
 async def test_fetch_normal_digest_routes_to_stats(spec):
     digest = "【分段纪要】窗口 7 天；问题 3 条；讨论 5 条"
     captured: list[str] = []
@@ -291,6 +311,7 @@ async def test_fetch_normal_digest_routes_to_stats(spec):
 
 
 # 验证“获取工具`failure``degrades``readable`回复”场景下的预期行为。
+# English: Verify fetch tool failure degrades to readable reply.
 async def test_fetch_tool_failure_degrades_to_readable_reply(spec):
     runtime = FakeAgentRuntime(error=RuntimeError("MCP tool call failed"))
     llm = ScriptedLLM({"请输出解析结果 JSON": PARSE_OK})
@@ -301,6 +322,7 @@ async def test_fetch_tool_failure_degrades_to_readable_reply(spec):
 
 # ---------------------------------------------------------------- stats
 
+# English: Verify stats prompt carries taxonomy override.
 async def test_stats_prompt_carries_taxonomy_override(spec):
     """覆盖口径从 parse_args 透传到 stats prompt（taxonomy_override 生效的管线证明）。"""
     digest = "【分段纪要】窗口 7 天"
@@ -318,6 +340,7 @@ async def test_stats_prompt_carries_taxonomy_override(spec):
 
 
 # 验证“`stats``failure``does`不`block`报告”场景下的预期行为。
+# English: Verify stats failure does not block report.
 async def test_stats_failure_does_not_block_report(spec):
     digest = "【分段纪要】窗口 7 天"
     llm = ScriptedLLM({
@@ -332,6 +355,7 @@ async def test_stats_failure_does_not_block_report(spec):
 
 # ---------------------------------------------------------------- report
 
+# English: Verify report streams three section reply.
 async def test_report_streams_three_section_reply(spec):
     """report 节点 output_key=reply 且 next=END：stream_final_reply 下产出 delta。"""
     report_text = "## 总结\n事项A。\n## 分类统计\n- 问题 30%\n## 汇报要点\n- 待办：X"

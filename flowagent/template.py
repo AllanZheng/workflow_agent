@@ -14,6 +14,7 @@ _TOKEN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)\}")
 _MISSING = object()
 
 
+# English: Return path.
 def get_path(obj, path: str, default=None):
     """按点路径从嵌套 dict 取值，取不到返回 None。"""
     cur = obj
@@ -25,10 +26,12 @@ def get_path(obj, path: str, default=None):
     return cur
 
 
+# English: Handle render template operations.
 def render_template(text: str, ctx: dict) -> str:
     """将模板中的 {var}/{a.b} 替换为上下文取值；未知占位符原样保留。"""
 
     # 处理`repl`相关逻辑。
+    # English: Handle repl operations.
     def repl(m: re.Match) -> str:
         key = m.group(1)
         val = get_path(ctx, key, _MISSING)

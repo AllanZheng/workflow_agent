@@ -7,17 +7,20 @@ from .errors import OutputParseError
 
 
 # 解析文本。
+# English: Parse text.
 def parse_text(content: str) -> str:
     return content.strip() if isinstance(content, str) else str(content)
 
 
 # 解析`lines`。
+# English: Parse lines.
 def parse_lines(content: str) -> list:
     text = parse_text(content)
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 # 处理`strip``code``fence`相关逻辑。
+# English: Handle strip code fence operations.
 def _strip_code_fence(text: str) -> str:
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*[ \t]*\n?", "", text)
@@ -25,6 +28,7 @@ def _strip_code_fence(text: str) -> str:
     return text
 
 
+# English: Parse JSON.
 def parse_json(content: str):
     """从 LLM 输出中提取第一个合法的 JSON 对象/数组。
 
@@ -42,6 +46,7 @@ def parse_json(content: str):
     raise OutputParseError(f"无法从LLM输出解析JSON: {content[:200]!r}")
 
 
+# English: Parse classifier.
 def parse_classifier(content: str, labels: list) -> str:
     """在输出文本中查找分类标签（长标签优先，避免前缀误命中）。"""
     text = parse_text(content)
@@ -51,6 +56,7 @@ def parse_classifier(content: str, labels: list) -> str:
     raise OutputParseError(f"输出中未找到任何标签 {labels}: {text[:200]!r}")
 
 
+# English: Validate schema.
 def validate_schema(value, schema: dict) -> None:
     """按 output_schema 校验已解析的 JSON 输出（失败关闭）。
 
@@ -88,6 +94,7 @@ def validate_schema(value, schema: dict) -> None:
             raise OutputParseError(f"字段 {key!r}={item!r} 不在枚举 {renum} 内")
 
 
+# English: Parse output.
 def parse_output(content: str, parser: str, labels: list | None = None):
     """按解析器名称分发。"""
     labels = labels or []

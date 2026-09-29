@@ -217,6 +217,7 @@ class ManagedAgentConfig(StrictModel):
     _snapshot_v3: ManagedSnapshotV3 | None = PrivateAttr(default=None)
 
     # 校验`raw``v3`生成快照。
+    # English: Validate raw v3 snapshot.
     @field_validator("snapshot", mode="before")
     @classmethod
     def _validate_raw_v3_snapshot(cls, value, info):
@@ -232,6 +233,7 @@ class ManagedAgentConfig(StrictModel):
         return value
 
     # 校验授权URL 地址。
+    # English: Validate authorization URL.
     @field_validator("model_authorization_url")
     @classmethod
     def _validate_authorization_url(cls, value: str | None) -> str | None:
@@ -247,6 +249,7 @@ class ManagedAgentConfig(StrictModel):
         return value
 
     # 校验生成快照契约。
+    # English: Validate snapshot contract.
     @model_validator(mode="after")
     def _validate_snapshot_contract(self):
         if isinstance(self.snapshot, ManagedSnapshotV3):
@@ -262,11 +265,13 @@ class ManagedAgentConfig(StrictModel):
         return self
 
     # 生成快照数据。
+    # English: Handle snapshot data operations.
     @property
     def snapshot_data(self) -> dict[str, Any]:
         return self.snapshot.model_dump(mode="json", exclude_unset=True)
 
     # 生成快照`v3`。
+    # English: Handle snapshot v3 operations.
     @property
     def snapshot_v3(self) -> ManagedSnapshotV3 | None:
         return self._snapshot_v3
@@ -298,6 +303,7 @@ class ExecutionRequest(StrictModel):
     agent_config: ManagedAgentConfig
 
     # 校验`v3`执行权限范围。
+    # English: Validate v3 execution scope.
     @model_validator(mode="after")
     def _validate_v3_execution_scope(self):
         if self.agent_config.snapshot_v3 is not None:
@@ -312,6 +318,7 @@ class ExecutionRequest(StrictModel):
 
 
 # 处理`digest`相关逻辑。
+# English: Handle digest operations.
 def _digest(snapshot: dict[str, Any]) -> str:
     encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True,
                          separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -322,6 +329,7 @@ def _digest(snapshot: dict[str, Any]) -> str:
 #: _request_llm 通过 model_credential_bindings() 调用，行为不变。
 
 
+# English: Handle truncate history operations.
 def _truncate_history(history: list[dict], history_limit: int) -> list[dict]:
     """评审 7f：runtime.history_limit 真正生效。history_limit<=0 表示
     不带历史（风险会商等无状态 flow 的明确选择）；注意 Python 切片
@@ -332,6 +340,7 @@ def _truncate_history(history: list[dict], history_limit: int) -> list[dict]:
     return list(history[-history_limit:])
 
 
+# English: Handle execution deadline seconds operations.
 def _execution_deadline_seconds(snapshot: dict) -> float:
     """评审 7f：workflow.timeout_ms（优先）/ adapter.timeout_ms 真正生效，
     作为整次 V1/V2 图执行的截止时间；两者都缺省时退回 Pydantic 模型声明的
@@ -344,6 +353,7 @@ def _execution_deadline_seconds(snapshot: dict) -> float:
 
 
 # 处理请求大语言模型相关逻辑。
+# English: Handle request LLM operations.
 def _request_llm(spec, config: ManagedAgentConfig):
     if config.snapshot_v3 is not None:
         model = config.snapshot_v3.model
@@ -382,6 +392,7 @@ def _request_llm(spec, config: ManagedAgentConfig):
 
 
 # 处理`managed``system`提示词相关逻辑。
+# English: Handle managed system prompt operations.
 def _managed_system_prompt(
     snapshot: dict[str, Any], memory_context: MemoryContextV1 | None = None,
 ) -> str:
@@ -407,6 +418,7 @@ def _managed_system_prompt(
 
 
 # 处理包含`analysis`目标相关逻辑。
+# English: Handle with analysis target operations.
 def _with_analysis_target(system_prompt: str, target: GroupAnalysisTarget | None) -> str:
     if target is None:
         return system_prompt
@@ -420,6 +432,7 @@ def _with_analysis_target(system_prompt: str, target: GroupAnalysisTarget | None
 
 
 # 处理MCP客户端针对执行相关逻辑。
+# English: Handle MCP client for execution operations.
 def _mcp_client_for_execution(config: ManagedAgentConfig, legacy_workload_token: str):
     if not config.mcp_endpoint:
         return None
@@ -435,6 +448,7 @@ def _mcp_client_for_execution(config: ManagedAgentConfig, legacy_workload_token:
 
 
 # 执行`managed`。
+# English: Execute managed.
 async def execute_managed(
     request: ExecutionRequest,
     mcp_workload_token: str = "",
@@ -520,6 +534,7 @@ async def execute_managed(
 
 
 # 执行`managed``v3`。
+# English: Execute managed v3.
 async def _execute_managed_v3(
     request: ExecutionRequest, *, model_authorizer: ModelAuthorizer | None,
     skill_loader: Callable[..., Any] | None,
@@ -586,6 +601,7 @@ async def _execute_managed_v3(
 
 
 # 处理回执相关逻辑。
+# English: Handle receipt operations.
 def _receipt(config: ManagedAgentConfig, loaded_skills: list[dict] | None = None, *,
              execution_id: str | None = None, usage=None,
              memory_context_status: str = "unavailable") -> dict[str, Any]:
@@ -623,6 +639,7 @@ def _receipt(config: ManagedAgentConfig, loaded_skills: list[dict] | None = None
 
 
 # 处理`reachable`节点相关逻辑。
+# English: Handle reachable nodes operations.
 def _reachable_nodes(spec) -> set[str]:
     reachable: set[str] = set()
     pending = [spec.workflow.start]
@@ -635,6 +652,7 @@ def _reachable_nodes(spec) -> set[str]:
     return reachable
 
 
+# English: Handle invalid request response operations.
 def _invalid_request_response() -> JSONResponse:
     """请求模型校验失败不回显 Pydantic 的 input/error 文本。"""
     return JSONResponse(
@@ -643,6 +661,7 @@ def _invalid_request_response() -> JSONResponse:
     )
 
 
+# English: Handle stream managed operations.
 async def stream_managed(
     request: ExecutionRequest,
     mcp_workload_token: str = "",
@@ -811,6 +830,7 @@ async def stream_managed(
 
 
 # 构建执行`app`。
+# English: Build execution app.
 def build_execution_app(
     internal_token: str, mcp_workload_token: str = "", *,
     model_authorizer: ModelAuthorizer | None = None,
@@ -825,6 +845,7 @@ def build_execution_app(
     checkpoint_mode = (os.getenv("FLOWAGENT_CHECKPOINT") or "disabled").strip().lower()
 
     # 处理`lifespan`相关逻辑。
+    # English: Handle lifespan operations.
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if checkpoint_mode == "postgres":
@@ -844,6 +865,7 @@ def build_execution_app(
     app.add_middleware(RequestIdMiddleware)
 
     # 处理能力相关逻辑。
+    # English: Handle capabilities operations.
     @app.get("/capabilities")
     async def capabilities(request: Request):
         authorization = request.headers.get("authorization", "")
@@ -865,6 +887,7 @@ def build_execution_app(
         }
 
     # 处理能力`v2`相关逻辑。
+    # English: Handle capabilities v2 operations.
     @app.get("/capabilities/v2")
     async def capabilities_v2(request: Request):
         authorization = request.headers.get("authorization", "")
@@ -894,11 +917,13 @@ def build_execution_app(
         return capabilities.model_dump(mode="json")
 
     # 处理健康状态相关逻辑。
+    # English: Handle health operations.
     @app.get("/health")
     async def health():
         return {"ok": True}
 
     # 执行响应对应的流程。
+    # English: Handle the current operation.
     @app.post("/execution-v1/respond")
     async def respond(request: Request):
         authorization = request.headers.get("authorization", "")
@@ -926,6 +951,7 @@ def build_execution_app(
             return JSONResponse(status_code=error.http_status, content=error_response_body(error))
 
     # 响应流式处理。
+    # English: Handle stream.
     @app.post("/execution-v1/respond/stream")
     async def respond_stream(request: Request):
         authorization = request.headers.get("authorization", "")
@@ -937,6 +963,7 @@ def build_execution_app(
             return _invalid_request_response()
 
         # 处理事件相关逻辑。
+        # English: Handle events operations.
         async def events():
             emitted = 0
             try:
@@ -964,6 +991,7 @@ def build_execution_app(
         return StreamingResponse(events(), media_type="text/event-stream")
 
     # 执行重置对应的流程。
+    # English: Reset the current operation.
     @app.post("/execution-v1/reset")
     async def reset(request: Request):
         authorization = request.headers.get("authorization", "")

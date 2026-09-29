@@ -8,15 +8,18 @@ _CALLS: dict = {}
 
 
 # 执行重置对应的流程。
+# English: Reset the current operation.
 def reset() -> None:
     _CALLS.clear()
 
 
 # 处理`calls`相关逻辑。
+# English: Handle calls operations.
 def calls(key: str = "default") -> int:
     return _CALLS.get(key, 0)
 
 
+# English: Handle flaky tool operations.
 def flaky_tool(key: str = "default", fail_times: int = 1) -> str:
     """前 fail_times 次调用抛异常，之后成功——用于验证节点重试。"""
     _CALLS[key] = _CALLS.get(key, 0) + 1
@@ -25,6 +28,7 @@ def flaky_tool(key: str = "default", fail_times: int = 1) -> str:
     return f"ok after {_CALLS[key]} calls"
 
 
+# English: Handle slow counting tool operations.
 def slow_counting_tool(key: str = "slow", seconds: float = 0.6) -> str:
     """慢工具（带副作用计数）：验证超时按时返回且副作用不重复（评审 4.3）。"""
     _CALLS[key] = _CALLS.get(key, 0) + 1

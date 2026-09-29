@@ -60,10 +60,12 @@ _VALUE_ERROR_409_CODES = frozenset({"config_digest_mismatch", "config_identity_m
 
 
 # 处理`lookup`相关逻辑。
+# English: Look up the current operation.
 def _lookup(code: str) -> dict[str, object]:
     return ERROR_TABLE.get(code, ERROR_TABLE["execution_failed"])
 
 
+# English: Handle classify exception operations.
 def classify_exception(exc: BaseException) -> ExecutionError:
     """把已知异常类型映射为统一错误码；未识别的异常归入 execution_failed。
 
@@ -105,6 +107,7 @@ def classify_exception(exc: BaseException) -> ExecutionError:
     return ExecutionError(code="execution_failed", message="execution failed", **meta)
 
 
+# English: Handle error response body operations.
 def error_response_body(error: ExecutionError, *, request_id: str | None = None) -> dict:
     """respond() 的 JSON 错误体：只新增 stage/retryable/fallback_eligible/request_id 字段。"""
     body: dict[str, object] = {

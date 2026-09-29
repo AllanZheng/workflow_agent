@@ -24,6 +24,7 @@ class ImError(RuntimeError):
     """im 调用失败；对外只暴露稳定错误码，绝不携带令牌或响应原文。"""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message or code)
         self.code = code
@@ -42,6 +43,7 @@ class ImClient:
     """请求级 im REST 客户端；用完必须 aclose（或用 async with）。"""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(
         self,
         base_url: str,
@@ -58,19 +60,23 @@ class ImClient:
         self._owns_client = client is None
 
     # 处理`aenter`相关逻辑。
+    # English: Enter the asynchronous context and return its resource.
     async def __aenter__(self) -> "ImClient":
         return self
 
     # 处理`aexit`相关逻辑。
+    # English: Exit the asynchronous context and release its resource.
     async def __aexit__(self, *exc_info) -> None:
         await self.aclose()
 
     # 异步关闭当前连接并释放相关资源。
+    # English: Handle aclose operations.
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
 
     # 执行获取对应的流程。
+    # English: Return the current operation.
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         try:
             response = await self._client.get(path, params=params)
@@ -93,6 +99,7 @@ class ImClient:
         except ValueError as exc:
             raise ImError("im_error", "im 返回非 JSON 响应") from exc
 
+    # English: Handle iter group conversations operations.
     async def iter_group_conversations(
         self, *, max_pages: int = 10
     ) -> AsyncIterator[list[dict[str, Any]]]:
@@ -109,6 +116,7 @@ class ImClient:
             if not payload.get("has_more"):
                 return
 
+    # English: Return conversation.
     async def get_conversation(self, conversation_id: int) -> dict[str, Any]:
         """会话详情（含成员昵称映射所需 members，detail=True 才带 nickname）。"""
         payload = await self._get(f"/conversations/{conversation_id}")
@@ -116,6 +124,7 @@ class ImClient:
             raise ImError("im_error", "会话详情响应形状异常")
         return payload
 
+    # English: Handle iter message pages operations.
     async def iter_message_pages(
         self,
         conversation_id: int,

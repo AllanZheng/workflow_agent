@@ -42,6 +42,7 @@ _ENGINE = None
 
 
 # 处理`lifespan`相关逻辑。
+# English: Handle lifespan operations.
 @asynccontextmanager
 async def lifespan(app):
     global _ENGINE
@@ -54,6 +55,7 @@ async def lifespan(app):
 
 
 # 获取`engine`。
+# English: Return engine.
 def get_engine() -> WorkflowEngine:
     if _ENGINE is None:
         raise RuntimeError("API lifespan 尚未启动")
@@ -92,6 +94,7 @@ app = FastAPI(
 app.add_middleware(RequestIdMiddleware)
 
 
+# English: Handle result operations.
 def _result(final: dict, thread_id: str) -> JSONResponse:
     """构造响应：真实 HTTP 语义——等待人工=202（异步未完成），完成=200。"""
     payload = WorkflowEngine.waiting_on(final)
@@ -107,6 +110,7 @@ def _result(final: dict, thread_id: str) -> JSONResponse:
     return JSONResponse(status_code=200, content=body)
 
 
+# English: Create run.
 @app.post("/runs", responses=_RESPONSES)
 def create_run(body: RunIn):
     """启动一次运行；若流程包含 human 节点且命中，则返回 202 与待办问题。"""
@@ -120,6 +124,7 @@ def create_run(body: RunIn):
 
 
 # 获取运行。
+# English: Return run.
 @app.get("/runs/{thread_id}", responses=_RESPONSES)
 def get_run(thread_id: str):
     snapshot = get_engine().get_state(thread_id)
@@ -143,6 +148,7 @@ def get_run(thread_id: str):
 
 
 # 处理`resume`运行相关逻辑。
+# English: Handle resume run operations.
 @app.post("/runs/{thread_id}/resume", responses=_RESPONSES)
 def resume_run(thread_id: str, body: ResumeIn):
     engine = get_engine()
@@ -159,6 +165,7 @@ def resume_run(thread_id: str, body: ResumeIn):
 
 
 # 处理健康状态相关逻辑。
+# English: Handle health operations.
 @app.get("/health")
 def health():
     return {"ok": True, "config": CONFIG_PATH}

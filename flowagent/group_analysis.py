@@ -19,6 +19,7 @@ DEFAULT_CATEGORIES = ("问题", "通知", "讨论", "闲聊", "其他")
 
 
 # 处理JSON`object`相关逻辑。
+# English: Handle JSON object operations.
 def _json_object(content: Any) -> dict:
     if isinstance(content, list):
         content = "".join(str(item) for item in content)
@@ -29,6 +30,7 @@ def _json_object(content: Any) -> dict:
 
 
 # 处理`invoke`JSON相关逻辑。
+# English: Handle invoke JSON operations.
 async def _invoke_json(llm, system: str, prompt: str) -> dict:
     response = await asyncio.to_thread(
         llm.invoke, [SystemMessage(content=system), HumanMessage(content=prompt)],
@@ -37,6 +39,7 @@ async def _invoke_json(llm, system: str, prompt: str) -> dict:
 
 
 # 处理`taxonomy`相关逻辑。
+# English: Handle taxonomy operations.
 def _taxonomy(override: str) -> tuple[str, ...]:
     if not override:
         return DEFAULT_CATEGORIES
@@ -48,6 +51,7 @@ def _taxonomy(override: str) -> tuple[str, ...]:
 
 
 # 处理`batches`相关逻辑。
+# English: Handle batches operations.
 def _batches(messages: list[dict], max_chars: int = 12000,
              max_count: int = 100) -> list[list[dict]]:
     batches: list[list[dict]] = []
@@ -68,6 +72,7 @@ def _batches(messages: list[dict], max_chars: int = 12000,
 
 
 # 处理`analyze`群组相关逻辑。
+# English: Handle analyze group operations.
 async def analyze_group(request, spec, llm, mcp_client) -> tuple[str, dict]:
     """Resolve a named group through the platform, then read its bound ID."""
     target = request.analysis_target

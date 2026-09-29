@@ -7,6 +7,7 @@ from .errors import ConfigError
 from .template import get_path
 
 
+# English: Handle coerce operations.
 def _coerce(a, b):
     """eq/ne 用宽容比较：先试数值，失败退化为字符串（保持既有语义）。"""
     try:
@@ -15,6 +16,7 @@ def _coerce(a, b):
         return str(a), str(b)
 
 
+# English: Handle numeric operations.
 def _numeric(a, b):
     """gt/ge/lt/le 专用：任一侧无法数值化返回 None（规则不命中）。
 
@@ -27,6 +29,7 @@ def _numeric(a, b):
         return None
 
 
+# English: Handle evaluate op operations.
 def evaluate_op(op: str, field, value) -> bool:
     """对字段值 field 求值单个条件操作符。"""
     if op == "exists":
@@ -56,6 +59,7 @@ def evaluate_op(op: str, field, value) -> bool:
     raise ConfigError(f"未知路由操作符: {op}")
 
 
+# English: Handle loop exhausted operations.
 def _loop_exhausted(rule: RouteRule, route: RouteConfig, counts: dict) -> bool:
     """循环护栏：目标节点已执行次数达到 max_loops 时视为耗尽。"""
     max_loops = rule.max_loops if rule.max_loops is not None else route.max_loops
@@ -64,6 +68,7 @@ def _loop_exhausted(rule: RouteRule, route: RouteConfig, counts: dict) -> bool:
     return counts.get(rule.goto, 0) >= max_loops
 
 
+# English: Create router.
 def make_router(node_name: str, route: RouteConfig, error_goto: str | None = None):
     """为某个节点构造 LangGraph 条件边的路由函数（闭包持有路由配置）。
 
@@ -72,6 +77,7 @@ def make_router(node_name: str, route: RouteConfig, error_goto: str | None = Non
     """
 
     # 处理`router`相关逻辑。
+    # English: Handle router operations.
     def router(state: dict) -> str:
         err = state.get("error")
         if err and err.get("node") == node_name:

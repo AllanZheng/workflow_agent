@@ -108,6 +108,7 @@ class ToolInputError(ValueError):
 
 
 # 校验必需的`str`。
+# English: Require str.
 def _require_str(arguments: dict[str, Any], key: str) -> str:
     value = arguments.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -115,6 +116,7 @@ def _require_str(arguments: dict[str, Any], key: str) -> str:
     return value.strip()
 
 
+# English: Parse message ts.
 def _parse_message_ts(raw: Any) -> datetime | None:
     """把 im 消息 created_at（UTC ISO，Z 或 +00:00 后缀）解析为 aware UTC。"""
     if not isinstance(raw, str) or not raw:
@@ -125,6 +127,7 @@ def _parse_message_ts(raw: Any) -> datetime | None:
         return None
 
 
+# English: Handle sender nickname map operations.
 def _sender_nickname_map(conversation: dict[str, Any]) -> dict[int, str]:
     """sender_id -> 群内昵称映射；昵称缺失退化为 username/full_name/编号。"""
     mapping: dict[int, str] = {}
@@ -143,6 +146,7 @@ def _sender_nickname_map(conversation: dict[str, Any]) -> dict[int, str]:
     return mapping
 
 
+# English: Format message.
 def _format_message(message: dict[str, Any], nicknames: dict[int, str]) -> str | None:
     """单条消息 -> 语料行 ``[MM-DD HH:mm] 昵称: 内容``；不适用的返回 None。
 
@@ -180,6 +184,7 @@ def _format_message(message: dict[str, Any], nicknames: dict[int, str]) -> str |
     return f"[{stamp}] {nickname}: {text}"
 
 
+# English: Find group.
 async def find_group(
     im: ImClient, arguments: dict[str, Any], *, settings: Settings | None = None
 ) -> dict[str, Any]:
@@ -205,6 +210,7 @@ async def find_group(
     return {"groups": matched, "count": len(matched)}
 
 
+# English: Fetch group messages.
 async def fetch_group_messages(
     im: ImClient, arguments: dict[str, Any], *, settings: Settings
 ) -> dict[str, Any]:
@@ -214,6 +220,7 @@ async def fetch_group_messages(
         raise ToolInputError("conversation_id 必须为正整数")
 
     # 处理`int``arg`相关逻辑。
+    # English: Handle int arg operations.
     def _int_arg(key: str, default: int, low: int, high: int) -> int:
         value = arguments.get(key, default)
         if value is None:
@@ -300,6 +307,7 @@ async def fetch_group_messages(
 
 
 # 获取群组`analysis`输入。
+# English: Fetch group analysis input.
 async def fetch_group_analysis_input(
     im: ImClient, arguments: dict[str, Any], *, settings: Settings
 ) -> dict[str, Any]:
@@ -389,6 +397,7 @@ _ERROR_HINTS = {
 }
 
 
+# English: Handle error payload operations.
 def error_payload(code: str) -> dict[str, Any]:
     """构造 is_error 结构化载荷；未知码回退到 im_error。"""
     code = code if code in _ERROR_HINTS else "im_error"

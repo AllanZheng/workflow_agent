@@ -11,6 +11,7 @@ from .errors import ConfigError
 _ALLOWED_MANAGED_NODE_TYPES = frozenset({"agent", "llm", "template"})
 
 
+# English: Load managed spec.
 def load_managed_spec(text: str) -> WorkflowSpec:
     """解析并限制受管 YAML，防止绕过 MCP 授权执行本地代码或文件。"""
 

@@ -14,6 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# English: Handle bearer ok operations.
 def bearer_ok(authorization: str, expected_token: str) -> bool:
     """expected_token 为空表示该入口鉴权已放开，一律放行；否则要求
     Authorization 头精确等于 "Bearer <expected_token>"（常数时间比较）。
@@ -23,6 +24,7 @@ def bearer_ok(authorization: str, expected_token: str) -> bool:
     return hmac.compare_digest(authorization, f"Bearer {expected_token}")
 
 
+# English: Handle warn if disabled operations.
 def warn_if_disabled(service: str, expected_token: str) -> None:
     """token 为空时打印一次性告警；调用方在启动阶段调用一次即可。"""
     if not expected_token:

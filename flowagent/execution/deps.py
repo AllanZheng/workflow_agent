@@ -24,6 +24,7 @@ DEFAULT_MODEL_CREDENTIAL_BINDINGS: tuple[dict[str, str], ...] = (
 )
 
 
+# English: Handle model credential bindings operations.
 def model_credential_bindings() -> tuple[dict[str, str], ...]:
     """追加 `FLOWAGENT_MODEL_CREDENTIALS`（JSON 数组）声明的额外凭据映射。
 

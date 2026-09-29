@@ -47,6 +47,7 @@ CHAIN_SPEC = {
 
 class TestHumanChain:
     # 验证“`two``stage``approval``chain`”场景下的预期行为。
+    # English: Verify two stage approval chain.
     def test_two_stage_approval_chain(self):
         engine = WorkflowEngine(load_spec(CHAIN_SPEC), MockLLM())
         # 第一级：主管
@@ -64,6 +65,7 @@ class TestHumanChain:
         assert final["vars"]["manager_decision"] == "批准"
 
     # 验证“`chain``rejected``at``second``stage`”场景下的预期行为。
+    # English: Verify chain rejected at second stage.
     def test_chain_rejected_at_second_stage(self):
         engine = WorkflowEngine(load_spec(CHAIN_SPEC), MockLLM())
         engine.run({"ticket": "T-8"}, thread_id="chain2")
@@ -72,6 +74,7 @@ class TestHumanChain:
         assert final["vars"]["msg"] == "审批未通过：T-8"
 
     # 验证“`chain``rejected``at`首个`stage``skips``manager`”场景下的预期行为。
+    # English: Verify chain rejected at first stage skips manager.
     def test_chain_rejected_at_first_stage_skips_manager(self):
         engine = WorkflowEngine(load_spec(CHAIN_SPEC), MockLLM())
         engine.run({"ticket": "T-7"}, thread_id="chain3")

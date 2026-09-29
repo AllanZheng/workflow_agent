@@ -14,6 +14,7 @@ from flowagent.obs_log import (
 
 
 # 处理最后一个JSON`line`相关逻辑。
+# English: Handle last JSON line operations.
 def _last_json_line(stderr_text: str) -> dict:
     for line in reversed(stderr_text.strip().splitlines()):
         if line.startswith("{"):
@@ -22,6 +23,7 @@ def _last_json_line(stderr_text: str) -> dict:
 
 
 # 验证“`dual`流式处理与追踪”场景下的预期行为。
+# English: Verify dual stream and trace.
 def test_dual_stream_and_trace(capsys):
     setup_logging("workflow_agent", force=True)
     try:
@@ -41,8 +43,10 @@ def test_dual_stream_and_trace(capsys):
 
 
 # 验证“`middleware``echo`”场景下的预期行为。
+# English: Verify middleware echo.
 def test_middleware_echo():
     # 处理`echo``app`相关逻辑。
+    # English: Handle echo app operations.
     async def echo_app(scope, receive, send):
         body = (get_request_id() or "-").encode()
         await send({"type": "http.response.start", "status": 200,
@@ -50,6 +54,7 @@ def test_middleware_echo():
         await send({"type": "http.response.body", "body": body})
 
     # 处理场景相关逻辑。
+    # English: Handle scenario operations.
     async def scenario():
         transport = httpx.ASGITransport(app=RequestIdMiddleware(echo_app))
         async with httpx.AsyncClient(transport=transport,

@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 # 处理`describe``next`相关逻辑。
+# English: Handle describe next operations.
 def _describe_next(node: NodeConfig) -> str:
     nxt = node.next
     if isinstance(nxt, str):
@@ -36,6 +37,7 @@ def _describe_next(node: NodeConfig) -> str:
 
 
 # 处理`print`追踪相关逻辑。
+# English: Handle print trace operations.
 def _print_trace(final: dict) -> None:
     print("\n=== 执行轨迹 ===")
     for i, step in enumerate(final.get("trace") or [], 1):
@@ -49,12 +51,14 @@ def _print_trace(final: dict) -> None:
 
 
 # 处理`print``vars`相关逻辑。
+# English: Handle print vars operations.
 def _print_vars(final: dict) -> None:
     print("\n=== 输出变量 ===")
     for key, value in (final.get("vars") or {}).items():
         print(f"  {key} = {value}")
 
 
+# English: Handle print progress operations.
 def _print_progress(prev_len: int, final: dict) -> int:
     """流式模式下打印新增的轨迹条目，返回新的轨迹长度。"""
     trace = final.get("trace") or []
@@ -69,6 +73,7 @@ def _print_progress(prev_len: int, final: dict) -> int:
 
 
 # 处理`cmd`检查相关逻辑。
+# English: Handle cmd check operations.
 def _cmd_check(args) -> int:
     try:
         spec = load_spec_file(args.config)
@@ -101,6 +106,7 @@ def _cmd_check(args) -> int:
 
 
 # 处理`cmd``show`相关逻辑。
+# English: Handle cmd show operations.
 def _cmd_show(args) -> int:
     try:
         spec = load_spec_file(args.config)
@@ -119,6 +125,7 @@ def _cmd_show(args) -> int:
 
 
 # 加载输入。
+# English: Load inputs.
 def _load_inputs(args) -> dict:
     if args.input_file:
         with open(args.input_file, encoding="utf-8") as f:
@@ -131,6 +138,7 @@ def _load_inputs(args) -> dict:
 
 
 # 执行结束对应的流程。
+# English: Handle finish operations.
 def _finish(final: dict, thread_id: str) -> int:
     pending = WorkflowEngine.waiting_on(final)
     if pending is not None:
@@ -153,6 +161,7 @@ def _finish(final: dict, thread_id: str) -> int:
     return 0
 
 
+# English: Handle hint inputs operations.
 def _hint_inputs(spec, inputs: dict) -> None:
     """对照 workflow.inputs 声明提示可疑的运行输入（拼写错误高频坑），仅告警不阻断。"""
     declared = set(spec.workflow.inputs or [])
@@ -175,6 +184,7 @@ def _hint_inputs(spec, inputs: dict) -> None:
 
 
 # 处理`cmd`运行相关逻辑。
+# English: Handle cmd run operations.
 def _cmd_run(args) -> int:
     try:
         spec = load_spec_file(args.config)
@@ -232,6 +242,7 @@ def _cmd_run(args) -> int:
                 return 3 if pending is not None else 0
             return _finish(final, thread_id)
 
+# English: Write trace.
 def _write_trace(path: str, final: dict) -> None:
     """执行轨迹导出为 JSONL（每行一个轨迹事件，UTF-8）。"""
     import json as _json
@@ -246,6 +257,7 @@ def _write_trace(path: str, final: dict) -> None:
 
 
 # 处理`cmd``resume`相关逻辑。
+# English: Handle cmd resume operations.
 def _cmd_resume(args) -> int:
     try:
         spec = load_spec_file(args.config)
@@ -306,6 +318,7 @@ def _cmd_resume(args) -> int:
                            "thread_id": args.thread_id})
         return _finish(final, args.thread_id)
 
+# English: Resolve resume value.
 def _resolve_resume_value(raw_value, payload, options):
     """确定恢复值：--value 优先；缺省时交互式问答。
 
@@ -389,6 +402,7 @@ nodes:
 
 
 # 处理`cmd`新建相关逻辑。
+# English: Handle cmd new operations.
 def _cmd_new(args) -> int:
     from pathlib import Path
 
@@ -412,6 +426,7 @@ def _cmd_new(args) -> int:
 
 
 # 解析入口参数并启动主流程。
+# English: Run the main entry point.
 def main(argv=None) -> int:
     setup_logging("workflow_agent")
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):

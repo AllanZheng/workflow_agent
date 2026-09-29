@@ -122,6 +122,7 @@ class NodeConfig(BaseModel):
     on_error: OnErrorConfig | None = None
     next: str | list[str] | RouteConfig
 
+    # English: Handle next not empty operations.
     @field_validator("next")
     @classmethod
     def _next_not_empty(cls, v):
@@ -135,6 +136,7 @@ class NodeConfig(BaseModel):
                 raise ValueError("next 并行列表的每个目标必须是非空字符串")
         return v
 
+    # English: Handle next targets operations.
     @property
     def next_targets(self) -> list[str]:
         """该节点所有可能的后继目标（用于校验与图展示）。"""
@@ -185,6 +187,7 @@ class WorkflowSpec(BaseModel):
     nodes: dict[str, NodeConfig]
 
     # 检查`references`。
+    # English: Check references.
     @model_validator(mode="after")
     def _check_references(self) -> "WorkflowSpec":
         nodes = self.nodes
@@ -197,6 +200,7 @@ class WorkflowSpec(BaseModel):
             raise ValueError("recursion_limit 至少为 1")
 
         # 处理有效相关逻辑。
+        # English: Handle valid operations.
         def valid(target: str) -> bool:
             return target == "END" or target in nodes
 
@@ -254,6 +258,7 @@ class WorkflowSpec(BaseModel):
         return self
 
 
+# English: Load spec.
 def load_spec(data: dict) -> WorkflowSpec:
     """从 dict 加载并校验工作流规格。"""
     try:
@@ -263,6 +268,7 @@ def load_spec(data: dict) -> WorkflowSpec:
 
 
 # 解析`sub`路径。
+# English: Resolve sub path.
 def _resolve_sub_path(base_dir: Path, ref: str) -> Path:
     p = Path(ref)
     return p if p.is_absolute() else (base_dir / p)
@@ -271,6 +277,7 @@ def _resolve_sub_path(base_dir: Path, ref: str) -> Path:
 _TOKEN_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z0-9_]+)*\}")
 
 
+# English: Handle analyze references operations.
 def analyze_references(spec: WorkflowSpec) -> list[str]:
     """静态引用分析：返回模板/提示词中引用了、但无产出来源的变量名（根段）。
 
@@ -301,6 +308,7 @@ def analyze_references(spec: WorkflowSpec) -> list[str]:
     return sorted(refs - produced)
 
 
+# English: Check spec.
 def check_spec(spec: WorkflowSpec, _inherited: set[str] | None = None) -> list[str]:
     """完整性检查（供 CLI check）：静态引用分析 + 子图输入交叉检查。
 
@@ -340,6 +348,7 @@ def check_spec(spec: WorkflowSpec, _inherited: set[str] | None = None) -> list[s
     return warnings
 
 
+# English: Load spec file.
 def load_spec_file(path: str | Path, _stack: tuple = ()) -> WorkflowSpec:
     """从 YAML 文件加载工作流规格。
 

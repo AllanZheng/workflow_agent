@@ -30,6 +30,7 @@ HITL_SPEC = {
 
 
 # 处理`engine`相关逻辑。
+# English: Handle engine operations.
 @pytest.fixture
 def engine() -> WorkflowEngine:
     return WorkflowEngine(load_spec(HITL_SPEC), MockLLM())
@@ -37,6 +38,7 @@ def engine() -> WorkflowEngine:
 
 class TestHumanNode:
     # 验证“`pause`生成`interrupt`载荷”场景下的预期行为。
+    # English: Verify pause produces interrupt payload.
     def test_pause_produces_interrupt_payload(self, engine):
         paused = engine.run({"ticket": "T-1"}, thread_id="h1")
         payload = WorkflowEngine.waiting_on(paused)
@@ -45,6 +47,7 @@ class TestHumanNode:
         assert payload["question"] == "请审批：T-1"
 
     # 验证“`resume`包含拒绝路由`redo`”场景下的预期行为。
+    # English: Verify resume with reject routes to redo.
     def test_resume_with_reject_routes_to_redo(self, engine):
         engine.run({"ticket": "T-2"}, thread_id="h2")
         final = engine.resume("拒绝", thread_id="h2")
@@ -54,6 +57,7 @@ class TestHumanNode:
         assert final["loop_counts"]["ask"] == 1
 
     # 验证“`resume`包含`approach`路由`end`”场景下的预期行为。
+    # English: Verify resume with approach routes to end.
     def test_resume_with_approach_routes_to_end(self, engine):
         engine.run({"ticket": "T-3"}, thread_id="h3")
         final = engine.resume("批准", thread_id="h3")
@@ -61,6 +65,7 @@ class TestHumanNode:
         assert "msg" not in final["vars"]
 
     # 验证“默认项输出密钥当`unset`”场景下的预期行为。
+    # English: Verify default output key when unset.
     def test_default_output_key_when_unset(self):
         spec = {
             "workflow": {"name": "d", "start": "ask"},
@@ -75,6 +80,7 @@ class TestHumanNode:
         assert final["vars"]["human_decision"] == "ok"
 
     # 验证“`waiting`启用无针对`normal`状态”场景下的预期行为。
+    # English: Verify waiting on none for normal state.
     def test_waiting_on_none_for_normal_state(self):
         engine = WorkflowEngine(
             load_spec(
@@ -92,6 +98,7 @@ class TestHumanNode:
         assert WorkflowEngine.waiting_on({}) is None
 
     # 验证“`human`不包含消息`rejected`”场景下的预期行为。
+    # English: Verify human without message rejected.
     def test_human_without_message_rejected(self):
         with pytest.raises(ConfigError):
             load_spec(
@@ -101,6 +108,7 @@ class TestHumanNode:
                 }
             )
 
+    # English: Verify rerun same thread uses latest inputs.
     def test_rerun_same_thread_uses_latest_inputs(self, engine):
         """同 thread 重跑即重启：新输入合并后重新渲染暂停问题。"""
         engine.run({"ticket": "first"}, thread_id="h5")
@@ -135,6 +143,7 @@ class TestHumanOptionEnforcement:
     }
 
     # 验证“无效`answer``reinterrupts`包含错误`hint`”场景下的预期行为。
+    # English: Verify invalid answer reinterrupts with error hint.
     def test_invalid_answer_reinterrupts_with_error_hint(self):
         eng = WorkflowEngine(load_spec(self.OPT_SPEC), MockLLM())
         eng.run({"ticket": "T-9"}, thread_id="ie1")
@@ -146,6 +155,7 @@ class TestHumanOptionEnforcement:
         assert "msg" not in again["vars"]
 
     # 验证“`second``attempt`包含有效`answer`完成”场景下的预期行为。
+    # English: Verify second attempt with valid answer completes.
     def test_second_attempt_with_valid_answer_completes(self):
         eng = WorkflowEngine(load_spec(self.OPT_SPEC), MockLLM())
         eng.run({"ticket": "T-10"}, thread_id="ie2")
@@ -155,6 +165,7 @@ class TestHumanOptionEnforcement:
         assert "msg" not in final["vars"]
 
     # 验证“无`options``keeps``free`文本”场景下的预期行为。
+    # English: Verify no options keeps free text.
     def test_no_options_keeps_free_text(self):
         spec = {
             "workflow": {"name": "free", "start": "ask", "recursion_limit": 20},

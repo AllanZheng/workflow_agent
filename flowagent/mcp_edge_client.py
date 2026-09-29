@@ -18,9 +18,11 @@ class McpEdgeError(RuntimeError):
 
 class _Session(Protocol):
     # 列出工具。
+    # English: List tools.
     async def list_tools(self) -> Any: ...
 
     # 处理`call`工具相关逻辑。
+    # English: Handle call tool operations.
     async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> Any: ...
 
 
@@ -30,6 +32,7 @@ SessionFactory = Callable[
 ]
 
 
+# English: Handle sdk session operations.
 @asynccontextmanager
 async def _sdk_session(
     endpoint: str,
@@ -56,6 +59,7 @@ class McpEdgeClient:
     """通过 Demo 暴露的 Streamable HTTP MCP 端点发现和调用工具。"""
 
     # 初始化对象状态并建立所需依赖。
+    # English: Initialize object state and required dependencies.
     def __init__(
         self,
         endpoint: str,
@@ -118,20 +122,24 @@ class McpEdgeClient:
             }
 
     # 生成对象的调试表示。
+    # English: Return a developer-oriented representation of the object.
     def __repr__(self) -> str:
         return f"McpEdgeClient(endpoint={self._endpoint!r}, timeout_seconds={self._timeout_seconds!r})"
 
     # 处理工具绑定关系相关逻辑。
+    # English: Handle tool bindings operations.
     @property
     def tool_bindings(self) -> dict[str, dict[str, Any]]:
         return dict(self._tool_bindings)
 
     # 处理工具`alias`相关逻辑。
+    # English: Handle tool alias operations.
     @staticmethod
     def _tool_alias(tool_id: str) -> str:
         return "tool_" + uuid.UUID(str(tool_id)).hex
 
     # 处理会话相关逻辑。
+    # English: Handle session operations.
     def _session(self, extra_headers: Mapping[str, str] | None = None) -> Any:
         headers = {"Authorization": f"Bearer {self._workload_token}"}
         if self._execution_id is not None:
@@ -147,6 +155,7 @@ class McpEdgeClient:
         return self._session_factory(self._endpoint, headers, self._timeout_seconds)
 
     # 列出工具。
+    # English: List tools.
     async def list_tools(self) -> list[dict[str, Any]]:
         try:
             async with self._session() as session:
@@ -201,6 +210,7 @@ class McpEdgeClient:
         return tools
 
     # 处理`call`工具相关逻辑。
+    # English: Handle call tool operations.
     async def call_tool(self, name: str, arguments: Mapping[str, Any] | None = None) -> Any:
         remote_name = name
         call_headers = None
@@ -235,6 +245,7 @@ class McpEdgeClient:
         return self._normalize_content(result.content)
 
     # 规范化内容。
+    # English: Normalize content.
     @staticmethod
     def _normalize_content(content: list[Any]) -> Any:
         normalized: list[Any] = []
