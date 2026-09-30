@@ -560,7 +560,8 @@ async def test_mcp_lists_group_analysis_tools_with_contract_schemas():
     async with asgi_mcp_session(app) as session:
         result = await session.list_tools()
     by_name = {tool.name: tool for tool in result.tools}
-    assert set(by_name) == {"find_group", "fetch_group_messages", "fetch_group_analysis_input"}
+    assert set(by_name) == {"find_group", "fetch_group_messages", "fetch_group_analysis_input",
+                            "read_group_attachment"}
     assert by_name["find_group"].input_schema == FIND_GROUP_INPUT_SCHEMA
     assert by_name["fetch_group_messages"].input_schema == FETCH_GROUP_MESSAGES_INPUT_SCHEMA
 
@@ -622,7 +623,8 @@ async def test_flowagent_mcp_edge_client_round_trip():
         )
         tools = await client.list_tools()
         assert {t["name"] for t in tools} == {
-            "find_group", "fetch_group_messages", "fetch_group_analysis_input"}
+            "find_group", "fetch_group_messages", "fetch_group_analysis_input",
+            "read_group_attachment"}
         payload = await client.call_tool("find_group", {"name_query": "项目"})
         assert payload["count"] == 1
         with pytest.raises(McpEdgeError):

@@ -21,9 +21,18 @@ from datetime import datetime, timezone
 from .window import ANALYSIS_TIMEZONE
 from typing import Any
 
+import asyncio
+import shutil
+import tempfile
+from pathlib import Path
+
+from .attachments import MAX_FILE_BYTES, extract_file
 from .config import Settings
-from .im_client import ImClient
+from .im_client import ImClient, ImError
 from .window import TimeWindow, resolve_window
+
+#: 一次分析输入最多查询多少个附件元数据（每个附件一次 im 调用）
+MAX_ATTACHMENT_LOOKUPS = 200
 
 #: find_group 输入 schema —— Admin mcp_tools 注册快照对拍用同一来源
 FIND_GROUP_INPUT_SCHEMA: dict[str, Any] = {
@@ -99,6 +108,16 @@ FETCH_GROUP_ANALYSIS_INPUT_SCHEMA: dict[str, Any] = {
 
 #: find_group 候选上限（契约表：最多返回 10 条）
 FIND_GROUP_LIMIT = 10
+
+READ_GROUP_ATTACHMENT_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "conversation_id": {"type": "integer", "minimum": 1},
+        "attachment_id": {"type": "integer", "minimum": 1},
+    },
+    "required": ["conversation_id", "attachment_id"],
+    "additionalProperties": False,
+}
 
 
 class ToolInputError(ValueError):
@@ -328,7 +347,8 @@ async def fetch_group_analysis_input(
     if conversation.get("type") not in {"group", "channel"}:
         raise ToolInputError("目标不是群会话")
     nicknames = _sender_nickname_map(conversation)
-    rows: dict[int, tuple[datetime, str]] = {}
+    # message_id -> (时间, 语料行, 发送者 ID, 附件 ID 列表, 消息上的文件名)
+    rows: dict[int, tuple[datetime, str, int | None, list[int], str | None]] = {}
     page_count = 0
     partial_reasons: list[str] = []
     for_limit = settings.max_pages_per_segment
@@ -346,7 +366,12 @@ async def fetch_group_analysis_input(
                 continue
             line = _format_message(message, nicknames)
             if line:
-                rows[message_id] = (ts, line)
+                sender = message.get("sender_id")
+                raw_attachments = message.get("attachment_ids")
+                attachment_ids = [item for item in (raw_attachments if isinstance(raw_attachments, list) else [])
+                                  if type(item) is int and item > 0]
+                rows[message_id] = (ts, line, sender if type(sender) is int else None,
+                                    attachment_ids, message.get("file_name"))
         # 分页从最新往最老翻；本页最老一条已早于窗口起点，说明更老的页
         # 不可能再有落在窗口内的消息，提前停止（评审性能问题 9a）。
         if oldest_ts is not None and oldest_ts < window.start:
@@ -356,15 +381,34 @@ async def fetch_group_analysis_input(
     ordered = sorted(rows.items(), key=lambda item: (item[1][0], item[0]))
     messages: list[dict[str, Any]] = []
     used_chars = 0
-    for message_id, (ts, line) in ordered:
+    attachment_budget = MAX_ATTACHMENT_LOOKUPS
+    for message_id, (ts, line, sender_id, attachment_ids, file_name) in ordered:
         if len(messages) >= 1000:
             partial_reasons.append("message_limit")
             break
         if used_chars + len(line) > 120000:
             partial_reasons.append("char_limit")
             break
-        messages.append({"message_ref": f"m{message_id}", "timestamp": ts.isoformat(),
-                         "text": line})
+        entry: dict[str, Any] = {"message_ref": f"m{message_id}", "timestamp": ts.isoformat(),
+                                 "text": line, "sender_id": sender_id}
+        attachments: list[dict[str, Any]] = []
+        for attachment_id in attachment_ids:
+            meta: dict[str, Any] = {}
+            if attachment_budget > 0:
+                attachment_budget -= 1
+                try:
+                    meta = await im.get_attachment(attachment_id)
+                except ImError:
+                    meta = {}  # 元数据不可得时只返回编号，读取时再由 im 判定权限
+            attachments.append({
+                "attachment_id": attachment_id,
+                "filename": meta.get("original_name") or file_name or "",
+                "mime_type": meta.get("mime_type") or "",
+                "size": meta.get("file_size") if type(meta.get("file_size")) is int else None,
+            })
+        if attachments:
+            entry["attachments"] = attachments
+        messages.append(entry)
         used_chars += len(line)
     return {
         "conversation_id": conversation_id,
@@ -377,11 +421,62 @@ async def fetch_group_analysis_input(
     }
 
 
+# 读取群附件文本：鉴权由 im 的附件访问规则完成（统一账号令牌），抽取逻辑见 attachments.py。
+# English: Read and extract text of a group attachment.
+async def read_group_attachment(
+    im: ImClient, arguments: dict[str, Any], *, settings: Settings
+) -> dict[str, Any]:
+    conversation_id = arguments.get("conversation_id")
+    attachment_id = arguments.get("attachment_id")
+    if type(conversation_id) is not int or conversation_id < 1:
+        raise ToolInputError("conversation_id 必须为正整数")
+    if type(attachment_id) is not int or attachment_id < 1:
+        raise ToolInputError("attachment_id 必须为正整数")
+    # 先确认当前身份是该群成员（非成员由 im 返回不可见 -> group_not_found）
+    conversation = await im.get_conversation(conversation_id)
+    if conversation.get("type") not in {"group", "channel"}:
+        raise ToolInputError("目标不是群会话")
+    base: dict[str, Any] = {"attachment_id": attachment_id}
+    try:
+        meta = await im.get_attachment(attachment_id)
+    except ImError as exc:
+        if exc.code != "attachment_forbidden":
+            raise
+        return {**base, "filename": "", "status": "failed", "text": "", "truncated": False,
+                "chars": 0, "sha256": "", "format": "", "error_code": "attachment_forbidden"}
+    filename = str(meta.get("original_name") or "")
+    base["filename"] = filename
+    size = meta.get("file_size")
+    if type(size) is int and size > MAX_FILE_BYTES:
+        return {**base, "status": "too_large", "text": "", "truncated": False, "chars": 0,
+                "sha256": "", "format": Path(filename).suffix.lstrip(".").lower(),
+                "error_code": "too_large"}
+    workdir = Path(tempfile.mkdtemp(prefix="im-attachment-"))
+    try:
+        target = workdir / "download.bin"
+        try:
+            complete = await im.download_attachment(attachment_id, target, max_bytes=MAX_FILE_BYTES)
+        except ImError as exc:
+            if exc.code != "attachment_forbidden":
+                raise
+            return {**base, "status": "failed", "text": "", "truncated": False, "chars": 0,
+                    "sha256": "", "format": "", "error_code": "attachment_forbidden"}
+        if not complete:
+            return {**base, "status": "too_large", "text": "", "truncated": False, "chars": 0,
+                    "sha256": "", "format": Path(filename).suffix.lstrip(".").lower(),
+                    "error_code": "too_large"}
+        extracted = await asyncio.to_thread(extract_file, target, filename=filename)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    return {**base, **extracted}
+
+
 #: 工具名 -> (schema, 实现协程)；app.py 的 list/call 回调均由此分派
 TOOL_HANDLERS = {
     "find_group": (FIND_GROUP_INPUT_SCHEMA, find_group),
     "fetch_group_messages": (FETCH_GROUP_MESSAGES_INPUT_SCHEMA, fetch_group_messages),
     "fetch_group_analysis_input": (FETCH_GROUP_ANALYSIS_INPUT_SCHEMA, fetch_group_analysis_input),
+    "read_group_attachment": (READ_GROUP_ATTACHMENT_INPUT_SCHEMA, read_group_attachment),
 }
 
 #: 面向用户的错误码说明（MCP is_error 结构化返回；不泄露内部细节）
@@ -394,6 +489,7 @@ _ERROR_HINTS = {
     "segment_out_of_range": "分段序号越界，请按响应中的 segments_total 取值",
     "invalid_arguments": "工具参数不符合约定",
     "im_error": "群消息服务返回异常，请稍后再试",
+    "attachment_forbidden": "附件不存在或当前身份无权访问",
 }
 
 

@@ -116,6 +116,58 @@ class ImClient:
             if not payload.get("has_more"):
                 return
 
+    # 附件元数据（文件名/大小/类型）；访问规则由 im 的附件权限判断，403/404 都视为不可访问。
+    # English: Attachment metadata; 403/404 mean the caller cannot access it.
+    async def get_attachment(self, attachment_id: int) -> dict[str, Any]:
+        try:
+            response = await self._client.get(f"/attachments/{attachment_id}")
+        except httpx.HTTPError as exc:
+            raise ImError("im_unreachable", "无法连接 im 服务") from exc
+        if response.status_code in (403, 404):
+            raise ImError("attachment_forbidden", "附件不存在或无权访问")
+        if response.status_code == 401:
+            raise ImError("im_unauthorized", "im 令牌无效或无权限")
+        if response.status_code != 200:
+            raise ImError("im_unreachable" if response.status_code >= 500 else "im_error",
+                          f"im 返回非预期状态码 {response.status_code}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ImError("im_error", "im 返回非 JSON 响应") from exc
+        if not isinstance(payload, dict):
+            raise ImError("im_error", "附件元数据响应形状异常")
+        return payload
+
+    # 流式下载附件到本地文件，超过 max_bytes 立即中止并返回 False（文件已删除）。
+    # English: Stream an attachment to disk, aborting beyond max_bytes.
+    async def download_attachment(self, attachment_id: int, destination, *, max_bytes: int) -> bool:
+        try:
+            async with self._client.stream("GET", f"/attachments/{attachment_id}/download") as response:
+                if response.status_code in (403, 404):
+                    raise ImError("attachment_forbidden", "附件不存在或无权访问")
+                if response.status_code == 401:
+                    raise ImError("im_unauthorized", "im 令牌无效或无权限")
+                if response.status_code != 200:
+                    raise ImError("im_unreachable" if response.status_code >= 500 else "im_error",
+                                  f"im 返回非预期状态码 {response.status_code}")
+                declared = response.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > max_bytes:
+                    return False
+                written = 0
+                with open(destination, "wb") as handle:
+                    async for chunk in response.aiter_bytes():
+                        written += len(chunk)
+                        if written > max_bytes:
+                            break
+                        handle.write(chunk)
+                if written > max_bytes:
+                    import os
+                    os.unlink(destination)
+                    return False
+                return True
+        except httpx.HTTPError as exc:
+            raise ImError("im_unreachable", "无法连接 im 服务") from exc
+
     # English: Return conversation.
     async def get_conversation(self, conversation_id: int) -> dict[str, Any]:
         """会话详情（含成员昵称映射所需 members，detail=True 才带 nickname）。"""

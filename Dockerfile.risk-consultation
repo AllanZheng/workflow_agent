@@ -1,6 +1,15 @@
 ARG BASE_IMAGE=flowagent:group-name-20260926
 FROM ${BASE_IMAGE}
 WORKDIR /app
+# 附件读取（im_tools_mcp.read_group_attachment）用 LibreOffice 转换 wps/et/dps/doc/xls/ppt；
+# 仅装无界面组件与中文字体，转换时由代码启用独立 profile，不执行宏。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libreoffice-writer libreoffice-calc \
+       libreoffice-impress fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+# 基础镜像可能早于新增依赖构建，这里补装读取器（与 requirements.txt 一致）。
+RUN pip install --no-cache-dir --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    "python-docx>=1.1" "openpyxl>=3.1" "python-pptx>=1.0" "pypdf>=5.0" "charset-normalizer>=3.0"
 COPY flowagent/ ./flowagent/
 COPY services/ ./services/
 COPY configs/ ./configs/

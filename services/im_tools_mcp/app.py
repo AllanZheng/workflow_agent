@@ -56,6 +56,10 @@ TOOL_DESCRIPTIONS = {
     "fetch_group_analysis_input": (
         "按已授权的 conversation_id 一次性读取固定时间窗，返回去重后的消息与完整性状态。"
     ),
+    "read_group_attachment": (
+        "读取群内附件的文本（docx/xlsx/pptx/pdf 文字层/txt/md/csv，wps/et/dps/doc/xls/ppt 经转换），"
+        "返回 status/text/truncated/chars/sha256；仅供会商 worker 直接调用。"
+    ),
 }
 
 ImClientFactory = Callable[[str], ImClient]
