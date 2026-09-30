@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import inspect
 import hashlib
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from .mcp_edge_client import McpEdgeError
 from .skill_runtime import SkillLoadError
 
 
@@ -19,18 +22,43 @@ class _GroupSelectionRequired:
     message: str
 
 
+# 本地终端工具的结果：文本直接作为最终回复，不再交回模型改写。
+# English: Result of a local terminal tool; its text becomes the final reply verbatim.
+@dataclass(frozen=True)
+class _TerminalReply:
+    text: str
+    metadata: dict
+
+
+# 本地工具：由运行时自己执行，而不是转发到 MCP。requires_remote 指定它依赖的远端工具，
+# 远端工具对当前执行不可见时本地工具也不曝露。
+# English: A runtime-local tool; hidden when its required remote tool is not visible.
+@dataclass(frozen=True)
+class LocalTool:
+    name: str
+    description: str
+    parameters: dict
+    handler: Callable[[dict], Awaitable[tuple[str, dict]]]
+    requires_remote: str | None = None
+    terminal: bool = True
+
+
 @dataclass
 class RuntimeUsage:
     loaded_skills: list[dict[str, str]] = field(default_factory=list)
     skill_load_failures: list[dict[str, str]] = field(default_factory=list)
     called_tools: list[dict[str, str]] = field(default_factory=list)
+    # 仅在 record_tool_events=True 时填充：每次远端工具调用的远端名、结果与载荷。
+    tool_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ManagedAgentRuntime:
     # 初始化对象状态并建立所需依赖。
     # English: Initialize object state and required dependencies.
     def __init__(self, llm, mcp_client=None, *, skills=None, skill_loader=None,
-                 execution_id: str | None = None, generation: int | None = None) -> None:
+                 execution_id: str | None = None, generation: int | None = None,
+                 local_tools=None, tolerate_tool_errors: bool = False,
+                 record_tool_events: bool = False) -> None:
         self.llm = llm
         self.mcp_client = mcp_client
         self.loaded_skills: list[dict] = []
@@ -39,6 +67,12 @@ class ManagedAgentRuntime:
         self.execution_id = execution_id
         self.generation = generation
         self.usage = RuntimeUsage()
+        self.local_tools: list[LocalTool] = list(local_tools or [])
+        # 为真时工具报错不中断循环，而是以错误文本交回模型（函数阶段需要据此统计失败）。
+        self.tolerate_tool_errors = tolerate_tool_errors
+        self.record_tool_events = record_tool_events
+        self.terminal_metadata: dict = {}
+        self._active_local: dict[str, LocalTool] = {}
         self._skills_by_id = {str(skill["skill_id"]): skill for skill in self.skills}
         if len(self._skills_by_id) != len(self.skills):
             raise ValueError("duplicate_skill_binding")
@@ -95,6 +129,21 @@ class ManagedAgentRuntime:
                         "additionalProperties": False,
                     },
                 },
+            })
+        # 本地工具只在其依赖的远端工具对本次执行可见时才注册。
+        self._active_local = {}
+        for local in self.local_tools:
+            if local.requires_remote and not any(
+                    tool.get("remote_name") == local.requires_remote for tool in remote_tools):
+                continue
+            if local.name in allowed:
+                raise ValueError(f"reserved_tool_name: {local.name}")
+            allowed.add(local.name)
+            self._active_local[local.name] = local
+            schemas.append({
+                "type": "function",
+                "function": {"name": local.name, "description": local.description,
+                             "parameters": local.parameters},
             })
         messages = []
         full_system_prompt = self._system_prompt_with_skill_summaries(system_prompt)
@@ -177,11 +226,15 @@ class ManagedAgentRuntime:
 
     # 处理`call`工具相关逻辑。
     # English: Handle call tool operations.
-    async def _call_tool(self, call: dict, allowed: set[str]) -> str | _GroupSelectionRequired:
+    async def _call_tool(self, call: dict, allowed: set[str]) -> str | _GroupSelectionRequired | _TerminalReply:
         name = call["name"]
         if name not in allowed:
             raise ValueError(f"tool_not_allowed: {name}")
         arguments = call.get("args") or {}
+        local = self._active_local.get(name)
+        if local is not None:
+            text, metadata = await local.handler(dict(arguments))
+            return _TerminalReply(text, metadata)
         if name == "load_skill":
             skill_id = str(arguments.get("skill_id", ""))
             try:
@@ -193,7 +246,19 @@ class ManagedAgentRuntime:
             except Exception:
                 return self._skill_load_error(skill_id, "skill_load_failed")
         descriptor = getattr(self.mcp_client, "tool_bindings", {}).get(name)
-        result = await self.mcp_client.call_tool(name, arguments)
+        remote_name = descriptor.get("remote_name") if descriptor is not None else name
+        try:
+            result = await self.mcp_client.call_tool(name, arguments)
+        except McpEdgeError as exc:
+            if not self.tolerate_tool_errors:
+                raise
+            if self.record_tool_events:
+                self.usage.tool_events.append(
+                    {"remote_name": remote_name, "outcome": "failed", "payload": None})
+            return f"Tool call failed: {exc}"
+        if self.record_tool_events:
+            self.usage.tool_events.append(
+                {"remote_name": remote_name, "outcome": "success", "payload": result})
         if name == "platform_resolve_group" and isinstance(result, dict):
             if result.get("status") == "not_found":
                 return _GroupSelectionRequired("没有找到你可访问的目标群，请确认群名或提供群 ID。")
@@ -238,6 +303,7 @@ class ManagedAgentRuntime:
         self.loaded_skills = []
         self.usage = RuntimeUsage()
         self._loaded_skill_bodies = {}
+        self.terminal_metadata = {}
         allowed, schemas, messages = await self._setup(message, system_prompt, history)
         model = self.llm.bind_tools(schemas)
 
@@ -253,6 +319,9 @@ class ManagedAgentRuntime:
                 result = await self._call_tool(call, allowed)
                 if isinstance(result, _GroupSelectionRequired):
                     return result.message
+                if isinstance(result, _TerminalReply):
+                    self.terminal_metadata = result.metadata
+                    return result.text
                 messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
         raise ToolIterationLimit("managed agent tool iteration limit exceeded")
 
@@ -267,6 +336,7 @@ class ManagedAgentRuntime:
         self.loaded_skills = []
         self.usage = RuntimeUsage()
         self._loaded_skill_bodies = {}
+        self.terminal_metadata = {}
         allowed, schemas, messages = await self._setup(message, system_prompt, history)
         model = self.llm.bind_tools(schemas)
 
@@ -297,6 +367,11 @@ class ManagedAgentRuntime:
                 result = await self._call_tool(call, allowed)
                 if isinstance(result, _GroupSelectionRequired):
                     yield result.message
+                    return
+                if isinstance(result, _TerminalReply):
+                    # 终端工具结果一次性作为唯一的文本增量，不交回模型改写。
+                    self.terminal_metadata = result.metadata
+                    yield result.text
                     return
                 messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
         raise ToolIterationLimit("managed agent tool iteration limit exceeded")

@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from ..errors import ConfigError
+from ..errors import ConfigError, FunctionStageError
 from ..execution_authorization import AuthorizationError
 
 
@@ -49,6 +49,8 @@ ERROR_TABLE: dict[str, dict[str, object]] = {
     "MCP_TOOL_NOT_ALLOWED": {"http_status": 403, "stage": "mcp_call", "retryable": False, "fallback_eligible": False},
     "MCP_TOOL_ERROR": {"http_status": 502, "stage": "mcp_call", "retryable": True, "fallback_eligible": True},
     "TOOL_ITERATION_LIMIT": {"http_status": 422, "stage": "agent_loop", "retryable": False, "fallback_eligible": True},
+    # 模型结构化输出不稳定，允许调用方（会商阶段重试）再试。
+    "invalid_structured_output": {"http_status": 422, "stage": "agent_loop", "retryable": True, "fallback_eligible": False},
     "execution_timeout": {"http_status": 504, "stage": "execution", "retryable": True, "fallback_eligible": True},
     "execution_failed": {"http_status": 500, "stage": "execution", "retryable": False, "fallback_eligible": False},
 }
@@ -86,6 +88,9 @@ def classify_exception(exc: BaseException) -> ExecutionError:
             code=text, http_status=403 if denied else 503, stage="model_auth",
             retryable=not denied, fallback_eligible=not denied, message=text,
         )
+
+    if isinstance(exc, FunctionStageError):
+        return ExecutionError(code=exc.code, message=exc.code, **_lookup(exc.code))
 
     if isinstance(exc, ValueError):
         code = str(exc)

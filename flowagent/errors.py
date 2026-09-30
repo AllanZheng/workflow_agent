@@ -19,3 +19,13 @@ class OutputParseError(FlowAgentError):
 
 class ToolError(FlowAgentError):
     """工具节点执行失败。"""
+
+
+class FunctionStageError(FlowAgentError):
+    """功能阶段执行失败；code 是对外可见的稳定错误码（如 invalid_structured_output）。"""
+
+    # 保存错误码；str(exc) 与错误码一致。
+    # English: Keep the stable error code.
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code

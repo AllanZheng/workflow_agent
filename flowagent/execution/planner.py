@@ -11,14 +11,17 @@ from typing import Any
 
 
 # English: Select flow.
-def select_flow(config: Any, spec: Any = None) -> str:
+def select_flow(config: Any, spec: Any = None, *, function_task: Any = None) -> str:
     """按技术方案 §4.4 的规则选择 flow 名称。
 
+    平台下发了功能阶段任务（function_task）时优先走 function_stage（在 V3 判断之前）。
     V3 snapshot 不需要 `spec` 即可判定为 "qa"。V1/V2 必须先
     `load_managed_spec()` 解出 `spec` 才能区分 group_analysis 与
     managed_yaml——调用方在拿到 spec 之前只应依赖本函数对 V3 的判断，spec
     到手后再调用一次确认具体走哪条 V1/V2 子路径。
     """
+    if function_task is not None:
+        return "function_stage"
     if getattr(config, "snapshot_v3", None) is not None:
         return "qa"
     if spec is not None and spec.workflow.group_analysis_mode == "deterministic":

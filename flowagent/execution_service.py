@@ -37,8 +37,10 @@ from .execution_authorization import (
     ModelAuthorizer,
 )
 from .framework_capabilities import FrameworkCapabilitiesV2
+from .function_stage import FunctionTask, run_function_stage
 from .group_analysis import analyze_group
 from .llm import MockLLM
+from .local_tools import build_group_analysis_tool
 from .managed_config import load_managed_spec
 from .managed_config_v3 import ManagedSnapshotV3, parse_managed_snapshot_v3
 from .mcp_edge_client import McpEdgeClient
@@ -295,6 +297,8 @@ class ExecutionRequest(StrictModel):
     scene: dict[str, Any]
     request_metadata: dict[str, Any] = Field(default_factory=dict)
     memory_context: MemoryContextV1 | None = None
+    # 平台下发的功能阶段任务（风险会商的初稿/终稿/任务）；走 function_stage flow。
+    function_task: FunctionTask | None = None
     model: str | None = None
     model_revision: int | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
@@ -457,7 +461,12 @@ async def execute_managed(
     skill_loader: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     config = request.agent_config
-    if select_flow(config) == "qa":
+    flow = select_flow(config, function_task=request.function_task)
+    if flow == "function_stage":
+        return await _execute_function_stage(
+            request, model_authorizer=model_authorizer, skill_loader=skill_loader,
+        )
+    if flow == "qa":
         return await _execute_managed_v3(
             request, model_authorizer=model_authorizer, skill_loader=skill_loader,
         )
@@ -533,16 +542,11 @@ async def execute_managed(
     }
 
 
-# 执行`managed``v3`。
-# English: Execute managed v3.
-async def _execute_managed_v3(
-    request: ExecutionRequest, *, model_authorizer: ModelAuthorizer | None,
-    skill_loader: Callable[..., Any] | None,
-) -> dict[str, Any]:
+# 构建 V3 执行的模型、MCP 客户端与 Skill 加载器（对话与功能阶段共用）。
+# English: Build the model, MCP client and skill loader of a V3 execution.
+def _v3_execution_parts(request: ExecutionRequest, model_authorizer, skill_loader):
     config = request.agent_config
     snapshot = config.snapshot_v3
-    if snapshot is None:  # Internal guard for direct callers.
-        raise ValueError("managed_snapshot_v3_required")
     authorizer = model_authorizer or DemoModelAuthorizer(
         str(config.model_authorization_url), config.execution_token.get_secret_value(),
         str(snapshot.runtime_id), credential_generation=config.model_credential_generation,
@@ -569,10 +573,62 @@ async def _execute_managed_v3(
             str(snapshot.runtime_id),
             fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
         )
+    return snapshot, llm, mcp_client, resolved_skill_loader
+
+
+# 对话运行时的本地工具：快照授权了群分析输入工具时注册确定性群分析终端工具。
+# English: Local tools of a chat runtime (deterministic group analysis).
+def _chat_local_tools(request: ExecutionRequest, snapshot, llm, mcp_client) -> list:
+    if mcp_client is None or not any(
+            tool.remote_name == "fetch_group_analysis_input" for tool in snapshot.tools):
+        return []
+    return [build_group_analysis_tool(llm, mcp_client, request.analysis_target)]
+
+
+# 执行功能阶段（function_stage）：结构化输出 + 知识依据统计。
+# English: Execute a function stage.
+async def _execute_function_stage(
+    request: ExecutionRequest, *, model_authorizer: ModelAuthorizer | None,
+    skill_loader: Callable[..., Any] | None,
+) -> dict[str, Any]:
+    config = request.agent_config
+    if config.snapshot_v3 is None:
+        # 功能阶段只支持 V3 快照。
+        raise ConfigError("snapshot_version_not_supported")
+    snapshot, llm, mcp_client, resolved_skill_loader = _v3_execution_parts(
+        request, model_authorizer, skill_loader)
+    reply, function_meta, runtime = await run_function_stage(
+        request, llm=llm, mcp_client=mcp_client,
+        system_prompt=_with_analysis_target(snapshot.system_prompt, request.analysis_target),
+        skills=[skill.model_dump(mode="json") for skill in snapshot.skills],
+        skill_loader=resolved_skill_loader, execution_id=request.execution_id,
+        generation=request.binding_generation,
+    )
+    return {
+        "execution_id": request.execution_id, "reply": reply, "used_context_refs": [],
+        "metadata": {"agent_config_applied": _receipt(
+            config, execution_id=request.execution_id, usage=runtime.usage,
+            memory_context_status="unavailable",
+        ), **function_meta},
+    }
+
+
+# 执行`managed``v3`。
+# English: Execute managed v3.
+async def _execute_managed_v3(
+    request: ExecutionRequest, *, model_authorizer: ModelAuthorizer | None,
+    skill_loader: Callable[..., Any] | None,
+) -> dict[str, Any]:
+    config = request.agent_config
+    if config.snapshot_v3 is None:  # Internal guard for direct callers.
+        raise ValueError("managed_snapshot_v3_required")
+    snapshot, llm, mcp_client, resolved_skill_loader = _v3_execution_parts(
+        request, model_authorizer, skill_loader)
     runtime = ManagedAgentRuntime(
         llm, mcp_client, skills=[skill.model_dump(mode="json") for skill in snapshot.skills],
         skill_loader=resolved_skill_loader, execution_id=request.execution_id,
         generation=request.binding_generation,
+        local_tools=_chat_local_tools(request, snapshot, llm, mcp_client),
     )
     system_prompt = _with_analysis_target(snapshot.system_prompt, request.analysis_target)
     if request.memory_context is not None:
@@ -597,7 +653,7 @@ async def _execute_managed_v3(
         "metadata": {"agent_config_applied": _receipt(
             config, execution_id=request.execution_id, usage=runtime.usage,
             memory_context_status=(request.memory_context.status if request.memory_context else "unavailable"),
-        )},
+        ), **runtime.terminal_metadata},
     }
 
 
@@ -672,6 +728,9 @@ async def stream_managed(
 ):
     """执行受管图，并把终态 reply 节点的真实模型增量转为事件。"""
     seq = 0
+    if request.function_task is not None:
+        # 功能阶段需要完整的结构化结果，不支持流式。
+        raise ConfigError("function_task_requires_respond")
     yield {"seq": seq, "kind": "meta", "trace_id": request.execution_id, "framework": "workflow"}
     seq += 1
     config = request.agent_config
@@ -707,6 +766,7 @@ async def stream_managed(
             llm, mcp_client, skills=[skill.model_dump(mode="json") for skill in snapshot.skills],
             skill_loader=resolved_skill_loader, execution_id=request.execution_id,
             generation=request.binding_generation,
+            local_tools=_chat_local_tools(request, snapshot, llm, mcp_client),
         )
         reply = ""
         system_prompt = _with_analysis_target(snapshot.system_prompt, request.analysis_target)
@@ -732,7 +792,7 @@ async def stream_managed(
             "metadata": {"agent_config_applied": _receipt(
                 config, execution_id=request.execution_id, usage=runtime.usage,
                 memory_context_status=(request.memory_context.status if request.memory_context else "unavailable"),
-            )},
+            ), **runtime.terminal_metadata},
         }
         return
     snapshot = config.snapshot_data

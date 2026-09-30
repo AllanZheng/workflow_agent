@@ -31,10 +31,13 @@ def _json_object(content: Any) -> dict:
 
 # 处理`invoke`JSON相关逻辑。
 # English: Handle invoke JSON operations.
-async def _invoke_json(llm, system: str, prompt: str) -> dict:
-    response = await asyncio.to_thread(
-        llm.invoke, [SystemMessage(content=system), HumanMessage(content=prompt)],
-    )
+async def _invoke_json(llm, system: str, prompt: str, *, use_async: bool = False) -> dict:
+    messages = [SystemMessage(content=system), HumanMessage(content=prompt)]
+    # V3 授权模型只提供异步接口（同步 invoke 会绕过授权），因此由调用方指定。
+    if use_async:
+        response = await llm.ainvoke(messages)
+    else:
+        response = await asyncio.to_thread(llm.invoke, messages)
     return _json_object(response.content)
 
 
@@ -83,6 +86,18 @@ async def analyze_group(request, spec, llm, mcp_client) -> tuple[str, dict]:
     parsed = await _invoke_json(
         llm, parse_node.system or "", render_template(parse_node.prompt or "", context),
     )
+    # report 节点延迟取值：提前返回的分支不要求 spec 中存在 report 节点。
+    return await run_group_analysis(
+        parsed, target, llm, mcp_client.call_tool,
+        lambda: spec.nodes["report"].system or "",
+    )
+
+
+# 已解析参数之后的确定性流水线：定位群、取消息、分批归类、程序统计、生成报告。
+# V2 路径与 V3 终端工具共用这份实现，计数与比例永远由程序计算。
+# English: Deterministic pipeline after arguments are parsed (shared by V2 and the V3 tool).
+async def run_group_analysis(parsed: dict, target, llm, call_tool, report_system,
+                             *, use_async: bool = False) -> tuple[str, dict]:
     for key in ("start", "end", "taxonomy_override"):
         if not isinstance(parsed.get(key, ""), str):
             raise ValueError(f"invalid_{key}")
@@ -103,7 +118,7 @@ async def analyze_group(request, spec, llm, mcp_client) -> tuple[str, dict]:
         if group_id is not None:
             selection["conversation_id"] = group_id
         try:
-            resolved = await mcp_client.call_tool("platform_resolve_group", selection)
+            resolved = await call_tool("platform_resolve_group", selection)
         except McpEdgeError as exc:
             logger.warning("group resolution MCP failed: %s", exc)
             return "暂时无法查找群，请稍后重试。", {"analysis_result": None}
@@ -132,7 +147,7 @@ async def analyze_group(request, spec, llm, mcp_client) -> tuple[str, dict]:
         if parsed.get(key) not in (None, ""):
             arguments[key] = parsed[key]
     try:
-        raw = await mcp_client.call_tool("fetch_group_analysis_input", arguments)
+        raw = await call_tool("fetch_group_analysis_input", arguments)
     except McpEdgeError:
         return (
             "抱歉，暂时无法获取群消息，请稍后重试或联系管理员检查 im-tools-mcp。",
@@ -165,7 +180,8 @@ async def analyze_group(request, spec, llm, mcp_client) -> tuple[str, dict]:
         expected = {item["message_ref"] for item in batch}
         for attempt in range(2):
             try:
-                result = await _invoke_json(llm, "你是群消息分类器，不编造消息引用。", prompt)
+                result = await _invoke_json(llm, "你是群消息分类器，不编造消息引用。", prompt,
+                                            use_async=use_async)
                 items = result["assignments"]
                 if not isinstance(items, list) or len(items) != len(batch):
                     raise ValueError("classification_count_mismatch")
@@ -195,15 +211,16 @@ async def analyze_group(request, spec, llm, mcp_client) -> tuple[str, dict]:
                         "ratio": round(counts[category] * 100 / total, 1) if total else 0,
                         "quotes": examples[category]} for category in categories],
     }
-    report_node = spec.nodes["report"]
-    overview = await asyncio.to_thread(
-        llm.invoke, [SystemMessage(content=report_node.system or ""),
-                     HumanMessage(content=(
-                         "请输出群分析报告。仅写总结和汇报要点；统计表由程序提供。"
-                         f"分类统计：{json.dumps(statistics, ensure_ascii=False)}。"
-                         f"分批纪要：{json.dumps(batch_summaries, ensure_ascii=False)}"
-                     ))],
-    )
+    report_messages = [SystemMessage(content=report_system() or ""),
+                       HumanMessage(content=(
+                           "请输出群分析报告。仅写总结和汇报要点；统计表由程序提供。"
+                           f"分类统计：{json.dumps(statistics, ensure_ascii=False)}。"
+                           f"分批纪要：{json.dumps(batch_summaries, ensure_ascii=False)}"
+                       ))]
+    if use_async:
+        overview = await llm.ainvoke(report_messages)
+    else:
+        overview = await asyncio.to_thread(llm.invoke, report_messages)
     candidate = str(overview.content)
     summary = candidate.split("## 分类统计", 1)[0].strip()
     if "## 汇报要点" in candidate:
