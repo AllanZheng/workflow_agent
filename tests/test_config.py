@@ -342,6 +342,19 @@ class TestStrictValidation:
                                              "rules": [{"when": {"op": "exists"}, "goto": "n",
                                                         "max_loops": 2}]}}}})
 
+    # 验证“路由级`max``loops`不包含`exhaust`或默认项”场景下的预期行为。
+    # English: Verify route-level max_loops without exhaust or default.
+    def test_route_max_loops_without_exhaust_or_default(self):
+        # 只配路由级 max_loops、规则无 loop_exhaust、路由无 default：
+        # 运行期耗尽后无路可走，必须在加载期拒绝（缺陷审查 2026-10-01 F-02）。
+        # English: Route-level max_loops with no exhaust and no default leaves no
+        # path at runtime once exhausted; reject at load time (audit F-02).
+        self._load({"workflow": {"name": "v", "start": "n"},
+                    "nodes": {"n": {"type": "template", "template": "x", "output_key": "o",
+                                    "next": {"field": "o",
+                                             "max_loops": 2,
+                                             "rules": [{"when": {"op": "exists"}, "goto": "n"}]}}}})
+
     # 验证“`bad``regex`”场景下的预期行为。
     # English: Verify bad regex.
     def test_bad_regex(self):

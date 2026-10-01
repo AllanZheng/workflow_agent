@@ -240,6 +240,17 @@ class WorkflowSpec(BaseModel):
                     raise ValueError(f"节点 {name} 的路由既无 rules 也无 default")
                 if route.max_loops is not None and route.max_loops < 1:
                     raise ValueError(f"节点 {name} 的路由级 max_loops 至少为 1")
+                if route.max_loops is not None and not route.default:
+                    # 路由级护栏耗尽时同样回退到 loop_exhaust/default；规则缺两者
+                    # 之一会使运行期路由返回 None，必须在加载期拒绝（F-02）。
+                    # English: Route-level guardrail exhaustion falls back to
+                    # loop_exhaust/default too; missing both makes the runtime
+                    # router return None, so reject at load time (F-02).
+                    if any(rule.loop_exhaust is None for rule in route.rules):
+                        raise ValueError(
+                            f"节点 {name} 配置路由级 max_loops 时，"
+                            f"每条规则必须提供 loop_exhaust 或路由 default"
+                        )
                 for rule in route.rules:
                     if rule.max_loops is not None:
                         if rule.max_loops < 1:
