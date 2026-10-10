@@ -8,6 +8,7 @@ from flowagent.group_analysis import _taxonomy
     '按通知类、风险类、待办类、其他类分类',
     '分为通知类、风险类、待办类、其他类',
     '按通知类、风险类、待办类、其他类分析。',
+    '按通知类、风险类、待办类、其他类分类，汇总泵站状态和待办',
 ])
 def test_explicit_categories_survive_instruction_prefix_and_suffix(value):
     # 模型传入分类指令或纯名称列表时，应采用同一组明确分类。
