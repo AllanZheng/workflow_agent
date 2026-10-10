@@ -7,6 +7,7 @@ MVP 阶段每次操作建立并关闭独立 MCP 会话，避免在 Workflow 进�
 from __future__ import annotations
 
 import uuid
+import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
@@ -20,6 +21,11 @@ PLATFORM_TOOLS = frozenset({
 
 class McpEdgeError(RuntimeError):
     """MCP Edge 调用失败，对外信息刻意不包含密钥和远端响应正文。"""
+
+    def __init__(self, message):
+        # 仅记录此客户端生成的稳定诊断，不输出远端响应、参数或凭据。
+        super().__init__(message)
+        logging.getLogger(__name__).warning("mcp_edge_failure %s", message)
 
 
 class _Session(Protocol):

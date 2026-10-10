@@ -1042,8 +1042,6 @@ def build_execution_app(
                 # D-12：与 respond() 共用 classify_exception，修复此前流式路径
                 # 兜底粗糙（一律 execution_failed）导致的错误码不一致（评审 §7.2）。
                 error = classify_exception(exc)
-                # 日志保留稳定类型与业务错误码，不输出材料、工具参数或凭据。
-                logging.getLogger(__name__).warning("execution_stream_failed exception=%s code=%s", type(exc).__name__, error.code)
                 event = {
                     "seq": emitted, "kind": "error", "trace_id": payload.execution_id,
                     "error_code": error.code, "error_message": error.message,
