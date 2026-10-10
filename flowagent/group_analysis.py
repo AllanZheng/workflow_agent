@@ -200,6 +200,9 @@ async def run_group_analysis(parsed: dict, target, llm, call_tool, report_system
                    for item in batch]
         prompt = ("按给定类别给每条消息恰好分配一类，并简述本批事项，只输出 JSON："
                   '{"assignments":[{"message_ref":"m1","category":"类别"}],"summary":"事项"}。'
+                  # 演练标记只说明材料性质，不能掩盖演练中的状态通报、异常与待办。
+                  "演练或虚构材料也按其内容分类，不能仅因是演练而归入其他类。"
+                  "类别中若含风险类、通知类、待办类，分别依据异常隐患、状态通报、责任与时限选择主类。"
                   f"类别：{list(categories)}。消息：{json.dumps(payload, ensure_ascii=False)}")
         expected = {item["message_ref"] for item in batch}
         for attempt in range(2):
@@ -238,6 +241,9 @@ async def run_group_analysis(parsed: dict, target, llm, call_tool, report_system
     report_messages = [SystemMessage(content=report_system() or ""),
                        HumanMessage(content=(
                            "请输出群分析报告。仅写总结和汇报要点；统计表由程序提供。"
+                           # 报告保留演练事实，禁止模型把材料性质扩写为无依据的管理评价。
+                           "汇总消息里的具体数值、设备状态、责任人和时限；明确演练性质。"
+                           "不得添加材料未支持的沟通纪律、信息噪音或团队管理建议，也不能把演练异常描述为无风险。"
                            f"分类统计：{json.dumps(statistics, ensure_ascii=False)}。"
                            f"分批纪要：{json.dumps(batch_summaries, ensure_ascii=False)}"
                        ))]
