@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 from .agent_runtime import LocalTool
-from .group_analysis import run_group_analysis
+from .group_analysis import _taxonomy, run_group_analysis
 from .mcp_edge_client import McpEdgeError
 
 GROUP_ANALYSIS_TOOL_NAME = "analyze_group_messages"
@@ -34,7 +35,15 @@ _PARAMETERS = {
 
 # 构造群分析终端工具；调用时走与 V2 相同的确定性流水线。
 # English: Build the deterministic group-analysis terminal tool.
-def build_group_analysis_tool(llm, mcp_client, target) -> LocalTool:
+def build_group_analysis_tool(llm, mcp_client, target, *, requested_message: str = "") -> LocalTool:
+    # 用户已明确指定分类时，以原始请求为准，防止模型遗漏或改写类别。
+    requested_taxonomy = ""
+    match = re.search(r"按[^。！？\n]{1,180}?(?:分类|分析|统计)", requested_message)
+    if match:
+        try:
+            requested_taxonomy = "、".join(_taxonomy(match.group())[:-1])
+        except ValueError:
+            pass
     # 固定工具在 V3 下使用别名，这里按远端名找到别名再调用。
     # English: Adapt remote tool names to V3 pinned aliases.
     async def call_tool(name: str, arguments: dict[str, Any]):
@@ -58,7 +67,7 @@ def build_group_analysis_tool(llm, mcp_client, target) -> LocalTool:
             "start": arguments.get("start") or "",
             "end": arguments.get("end") or "",
             "days": arguments.get("days"),
-            "taxonomy_override": arguments.get("taxonomy") or "",
+            "taxonomy_override": requested_taxonomy or arguments.get("taxonomy") or "",
         }
         return await run_group_analysis(
             parsed, target, llm, call_tool, lambda: _REPORT_SYSTEM, use_async=True)

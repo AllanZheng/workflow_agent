@@ -43,7 +43,8 @@ def chat_local_tools(request, snapshot, llm, mcp_client):
     if mcp_client is None or not any(
             tool.remote_name == "fetch_group_analysis_input" for tool in snapshot.tools):
         return []
-    return [build_group_analysis_tool(llm, mcp_client, request.analysis_target)]
+    return [build_group_analysis_tool(llm, mcp_client, request.analysis_target,
+                                     requested_message=request.message)]
 
 
 def chat_runtime(request, snapshot, llm, mcp_client, skill_loader):
