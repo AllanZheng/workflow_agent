@@ -199,7 +199,8 @@ def _format_message(message: dict[str, Any], nicknames: dict[int, str]) -> str |
         text = f"{label} {body}" if label else body
     if not text:
         return None
-    stamp = ts.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+    # 引用语料与分析窗口、IM 页面使用同一时区，显式标注以免误读 UTC。
+    stamp = ts.astimezone(ANALYSIS_TIMEZONE).strftime("%m-%d %H:%M UTC+08:00")
     return f"[{stamp}] {nickname}: {text}"
 
 
