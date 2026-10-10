@@ -10,3 +10,7 @@ htmlcov/
 dist/
 *.egg-info/
 /docs
+
+# 测试目录不入库 / Test folders (not tracked)
+test/
+tests/
