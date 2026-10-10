@@ -118,3 +118,29 @@ def test_nontransient_errors_are_not_retried(streaming):
 def test_text_blocks_are_returned_as_text(streaming):
     model = Model([response([{"type": "text", "text": "实际内容"}], streaming)])
     assert execute(model, streaming) == "实际内容"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_unknown_tool_retries_before_any_tool_is_executed(streaming):
+    # 整轮先校验，避免合法调用已执行后才发现同批次包含未知工具。
+    calls = [{"id": "valid-1", "name": "report", "args": {}},
+             {"id": "invalid-1", "name": "invented_tool", "args": {}}]
+    model = Model([response("", streaming, tool_calls=calls),
+                   response("恢复后的真实回答", streaming)])
+    tools = Tools()
+    assert execute(model, streaming, tools) == "恢复后的真实回答"
+    assert model.calls == 2
+    assert tools.calls == 0
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_repeated_unknown_tool_fails_without_execution(streaming):
+    # 连续两次无效即明确失败，不能把未知工具当作授权调用。
+    call = {"id": "invalid-1", "name": "invented_tool", "args": {}}
+    model = Model([response("", streaming, tool_calls=[call]) for _ in range(2)])
+    tools = Tools()
+    with pytest.raises(Exception) as caught:
+        execute(model, streaming, tools)
+    assert classify_exception(caught.value).code == "MODEL_INVALID_RESPONSE"
+    assert model.calls == 2
+    assert tools.calls == 0

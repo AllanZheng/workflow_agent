@@ -315,7 +315,8 @@ class ManagedAgentRuntime:
         model = self.llm.bind_tools(schemas)
 
         for iteration in range(max_tool_iterations + 1):
-            response = await invoke_model(model, messages, execution_id=self.execution_id)
+            response = await invoke_model(model, messages, execution_id=self.execution_id,
+                                          allowed_tools=allowed)
             tool_calls = list(getattr(response, "tool_calls", None) or [])
             if not tool_calls:
                 return response_text(response.content)
@@ -350,7 +351,8 @@ class ManagedAgentRuntime:
         for iteration in range(max_tool_iterations + 1):
             response = None
             text_chunks: list[str] = []
-            async for chunk in stream_model(model, messages, buffered=bool(schemas), execution_id=self.execution_id):
+            async for chunk in stream_model(model, messages, buffered=bool(schemas),
+                                             execution_id=self.execution_id, allowed_tools=allowed):
                 response = chunk if response is None else response + chunk
                 content = response_text(getattr(chunk, "content", ""))
                 # 空工具路径下可立即透传，获得真正 token 级流式。若本轮工具

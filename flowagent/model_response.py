@@ -27,8 +27,12 @@ def response_text(content) -> str:
     return ""
 
 
-def _validate(response):
+def _validate(response, allowed_tools=None):
     if getattr(response, "invalid_tool_calls", None):
+        raise ModelResponseError("MODEL_INVALID_RESPONSE")
+    # 先校验整轮工具名再执行，既不放宽授权，也不重放同批次中的有效工具。
+    if allowed_tools is not None and any(call.get("name") not in allowed_tools
+            for call in (getattr(response, "tool_calls", None) or [])):
         raise ModelResponseError("MODEL_INVALID_RESPONSE")
     if not getattr(response, "tool_calls", None) and not response_text(
             getattr(response, "content", None)).strip():
@@ -60,12 +64,12 @@ def _record(error, response, execution_id, attempt, retry):
                    len(getattr(response, "tool_calls", None) or []), safe_reason)
 
 
-async def invoke_model(model, messages, *, execution_id=None):
+async def invoke_model(model, messages, *, execution_id=None, allowed_tools=None):
     for attempt in range(2):
         response = None
         try:
             response = await model.ainvoke(messages)
-            _validate(response)
+            _validate(response, allowed_tools)
             return response
         except Exception as exc:
             error = _retry_error(exc)
@@ -76,7 +80,7 @@ async def invoke_model(model, messages, *, execution_id=None):
                 raise error from exc
 
 
-async def stream_model(model, messages, *, buffered: bool, execution_id=None):
+async def stream_model(model, messages, *, buffered: bool, execution_id=None, allowed_tools=None):
     for attempt in range(2):
         response, published, pending = None, False, []
         try:
@@ -89,7 +93,7 @@ async def stream_model(model, messages, *, buffered: bool, execution_id=None):
                         yield item
                     pending.clear()
                     published = True
-            _validate(response)
+            _validate(response, allowed_tools)
             for item in pending:
                 yield item
             return
