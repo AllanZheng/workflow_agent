@@ -8,10 +8,11 @@ from flowagent.execution.v3_runtime import chat_local_tools
 
 
 @pytest.mark.parametrize('model_taxonomy', ['', '按技术类、管理类分析'])
-def test_original_requested_categories_take_precedence_over_model_arguments(model_taxonomy):
+@pytest.mark.parametrize('prefix', ['', '你是本群的统一AI助手。按问题自动选择普通问答、知识检索、群分析、风险查询和独立报告工具。\n用户问题：'])
+def test_original_requested_categories_take_precedence_over_model_arguments(model_taxonomy, prefix):
     # 原始请求已经明确列出分类时，模型遗漏或改写参数不能改变分类口径。
     request = SimpleNamespace(
-        message='分析本群13:00到13:10的消息，按通知类、风险类、待办类、其他类分类，汇总泵站状态。',
+        message=prefix + '分析本群13:00到13:10的消息，按通知类、风险类、待办类、其他类分类，汇总泵站状态。',
         analysis_target=SimpleNamespace(conversation_id=21))
     snapshot = SimpleNamespace(tools=[SimpleNamespace(remote_name='fetch_group_analysis_input')])
 

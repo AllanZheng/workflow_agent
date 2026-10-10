@@ -56,6 +56,16 @@ def _taxonomy(override: str) -> tuple[str, ...]:
     return tuple(names) + ("未归类",)
 
 
+def requested_taxonomy(message: str) -> str:
+    # 群消息前缀也含“按……分析”；跳过没有明确类别的片段，继续查找用户指令。
+    for match in re.finditer(r"按[^。！？\n]{1,180}?(?:分类|分析|统计)", message):
+        try:
+            return "、".join(_taxonomy(match.group())[:-1])
+        except ValueError:
+            continue
+    return ""
+
+
 # 处理`batches`相关逻辑。
 # English: Handle batches operations.
 def _batches(messages: list[dict], max_chars: int = 12000,
@@ -89,6 +99,10 @@ async def analyze_group(request, spec, llm, mcp_client) -> tuple[str, dict]:
     parsed = await _invoke_json(
         llm, parse_node.system or "", render_template(parse_node.prompt or "", context),
     )
+    # 旧工作流同样以明确的原始分类为准，避免模型遗漏或替换类别。
+    explicit_taxonomy = requested_taxonomy(request.message)
+    if explicit_taxonomy:
+        parsed["taxonomy_override"] = explicit_taxonomy
     # report 节点延迟取值：提前返回的分支不要求 spec 中存在 report 节点。
     return await run_group_analysis(
         parsed, target, llm, mcp_client.call_tool,
