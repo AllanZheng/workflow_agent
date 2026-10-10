@@ -46,7 +46,9 @@ async def _invoke_json(llm, system: str, prompt: str, *, use_async: bool = False
 def _taxonomy(override: str) -> tuple[str, ...]:
     if not override:
         return DEFAULT_CATEGORIES
-    source = override.rsplit("分", 1)[-1]
+    # 分类指令的末尾“分类”不能截断前面的名称；仅去除指令前后缀。
+    source = re.sub(r"(?:分类|分析|统计)\s*[。.!！]?$", "", override.strip())
+    source = re.sub(r"^(?:按[^类、，,/;；]{0,16}分(?:为)?|分类为|分类[:：]|分为|按)\s*", "", source)
     names = list(dict.fromkeys(re.findall(r"[\u4e00-\u9fffA-Za-z]{1,16}类", source)))
     if not 2 <= len(names) <= 8:
         raise ValueError("taxonomy_needs_explicit_categories")
