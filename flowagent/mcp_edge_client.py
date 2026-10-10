@@ -22,9 +22,10 @@ PLATFORM_TOOLS = frozenset({
 class McpEdgeError(RuntimeError):
     """MCP Edge 调用失败，对外信息刻意不包含密钥和远端响应正文。"""
 
-    def __init__(self, message):
+    def __init__(self, message, *, code: str | None = None):
         # 仅记录此客户端生成的稳定诊断，不输出远端响应、参数或凭据。
         super().__init__(message)
+        self.code = code
         logging.getLogger(__name__).warning("mcp_edge_failure %s", message)
 
 
@@ -251,7 +252,8 @@ class McpEdgeClient:
         if result.is_error:
             error_code = (result.structured_content or {}).get("error_code") if isinstance(result.structured_content, dict) else None
             suffix = f" ({error_code})" if isinstance(error_code, str) else ""
-            raise McpEdgeError(f"MCP tool returned an error: {remote_name}{suffix}")
+            raise McpEdgeError(f"MCP tool returned an error: {remote_name}{suffix}",
+                               code=error_code if isinstance(error_code, str) else None)
         if result.structured_content is not None:
             return result.structured_content
         return self._normalize_content(result.content)

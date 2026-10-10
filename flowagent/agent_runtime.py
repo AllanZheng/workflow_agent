@@ -233,7 +233,13 @@ class ManagedAgentRuntime:
         arguments = call.get("args") or {}
         local = self._active_local.get(name)
         if local is not None:
-            text, metadata = await local.handler(dict(arguments))
+            try:
+                text, metadata = await local.handler(dict(arguments))
+            except McpEdgeError as exc:
+                # 本地终端工具的参数错误也允许在原有轮次上限内修正。
+                if not self.tolerate_tool_errors:
+                    raise
+                return f"Tool call failed: {exc}"
             return _TerminalReply(text, metadata)
         if name == "load_skill":
             skill_id = str(arguments.get("skill_id", ""))

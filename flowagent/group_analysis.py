@@ -151,7 +151,14 @@ async def run_group_analysis(parsed: dict, target, llm, call_tool, report_system
             arguments[key] = parsed[key]
     try:
         raw = await call_tool("fetch_group_analysis_input", arguments)
-    except McpEdgeError:
+    except McpEdgeError as exc:
+        # 参数校验失败应交回模型修正，不能误报为 IM 服务不可用。
+        if exc.code == "invalid_arguments":
+            raise McpEdgeError(
+                "Invalid group analysis time window. Use ISO 8601 start/end with timezone "
+                "(Beijing example: 2026-10-10T13:00:00+08:00), start before end, "
+                "at most 31 days; omit days for an absolute window.", code=exc.code,
+            ) from exc
         return (
             "抱歉，暂时无法获取群消息，请稍后重试或联系管理员检查 im-tools-mcp。",
             {"analysis_result": {
