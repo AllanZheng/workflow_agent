@@ -362,7 +362,7 @@ def _request_llm(spec, config: ManagedAgentConfig):
             raise ConfigError("managed_model_config_missing")
         from langchain_openai import ChatOpenAI
 
-        parameters = model.parameters.model_dump(exclude_none=True)
+        parameters = {**model.parameters.model_dump(exclude_none=True), "max_retries": 0}  # 重试由单轮恢复统一控制。
         return ChatOpenAI(
             model=model.model_name, base_url=model.base_url,
             api_key=config.model_api_key.get_secret_value(), **parameters,
@@ -385,7 +385,7 @@ def _request_llm(spec, config: ManagedAgentConfig):
         raise ConfigError("managed_model_config_missing")
     from langchain_openai import ChatOpenAI
 
-    parameters = dict(model.get("parameters") or {})
+    parameters = {**(model.get("parameters") or {}), "max_retries": 0}  # 避免 SDK 和运行时叠加重试。
     return ChatOpenAI(
         model=model["name"], base_url=str(model["base_url"]),
         api_key=model_key, **parameters,

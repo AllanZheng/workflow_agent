@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 from ..errors import ConfigError, FunctionStageError
 from ..execution_authorization import AuthorizationError
+from ..model_response import ModelResponseError
+from ..agent_runtime import ToolIterationLimit
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,8 @@ ERROR_TABLE: dict[str, dict[str, object]] = {
     "model_credential_rotated": {"http_status": 503, "stage": "model_auth", "retryable": True, "fallback_eligible": True},
     "MODEL_TIMEOUT": {"http_status": 504, "stage": "model_call", "retryable": True, "fallback_eligible": True},
     "MODEL_UPSTREAM_ERROR": {"http_status": 502, "stage": "model_call", "retryable": True, "fallback_eligible": True},
+    "MODEL_EMPTY_RESPONSE": {"http_status": 502, "stage": "model_call", "retryable": True, "fallback_eligible": True},
+    "MODEL_INVALID_RESPONSE": {"http_status": 502, "stage": "model_call", "retryable": True, "fallback_eligible": True},
     "MCP_TOOL_NOT_ALLOWED": {"http_status": 403, "stage": "mcp_call", "retryable": False, "fallback_eligible": False},
     "MCP_TOOL_ERROR": {"http_status": 502, "stage": "mcp_call", "retryable": True, "fallback_eligible": True},
     "TOOL_ITERATION_LIMIT": {"http_status": 422, "stage": "agent_loop", "retryable": False, "fallback_eligible": True},
@@ -74,6 +78,12 @@ def classify_exception(exc: BaseException) -> ExecutionError:
     与现状（respond() 的 except 链）保持逐条一致，只是把散落在多处的映射
     收敛到一个函数，供 respond 和 stream 共用。
     """
+    # 在通用异常之前保留模型和工具循环的稳定错误码，页面可以正确提示重试。
+    if isinstance(exc, ModelResponseError):
+        return ExecutionError(code=exc.code, message=exc.code, **_lookup(exc.code))
+    if isinstance(exc, ToolIterationLimit):
+        return ExecutionError(code="TOOL_ITERATION_LIMIT", message="tool iteration limit exceeded",
+                              **_lookup("TOOL_ITERATION_LIMIT"))
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         meta = _lookup("execution_timeout")
         return ExecutionError(code="execution_timeout", message=str(exc) or "execution timed out", **meta)

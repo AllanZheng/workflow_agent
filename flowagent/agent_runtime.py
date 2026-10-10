@@ -11,6 +11,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from .mcp_edge_client import McpEdgeError
 from .skill_runtime import SkillLoadError
+from .model_response import invoke_model, response_text, stream_model
 
 
 class ToolIterationLimit(RuntimeError):
@@ -314,10 +315,10 @@ class ManagedAgentRuntime:
         model = self.llm.bind_tools(schemas)
 
         for iteration in range(max_tool_iterations + 1):
-            response = await model.ainvoke(messages)
+            response = await invoke_model(model, messages, execution_id=self.execution_id)
             tool_calls = list(getattr(response, "tool_calls", None) or [])
             if not tool_calls:
-                return str(response.content)
+                return response_text(response.content)
             if iteration >= max_tool_iterations:
                 raise ToolIterationLimit("managed agent tool iteration limit exceeded")
             messages.append(response)
@@ -349,9 +350,9 @@ class ManagedAgentRuntime:
         for iteration in range(max_tool_iterations + 1):
             response = None
             text_chunks: list[str] = []
-            async for chunk in model.astream(messages):
+            async for chunk in stream_model(model, messages, buffered=bool(schemas), execution_id=self.execution_id):
                 response = chunk if response is None else response + chunk
-                content = getattr(chunk, "content", "")
+                content = response_text(getattr(chunk, "content", ""))
                 # 空工具路径下可立即透传，获得真正 token 级流式。若本轮工具
                 # 可用则先暂存，直到确认它不是工具调用轮次，避免泄露中间推理。
                 if isinstance(content, str) and content:
