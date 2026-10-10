@@ -11,6 +11,12 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
+# 平台原生工具由每次执行的服务端目录授权，不属于发布快照的远程工具 UUID。
+# English: Native platform tools are authorized by the live execution catalog.
+PLATFORM_TOOLS = frozenset({
+    "platform_resolve_group", "get_risk_consultation_context",
+    "analyze_risk_consultation", "generate_risk_analysis_report",
+})
 
 class McpEdgeError(RuntimeError):
     """MCP Edge 调用失败，对外信息刻意不包含密钥和远端响应正文。"""
@@ -185,7 +191,7 @@ class McpEdgeClient:
                     "remote_name": pinned["remote_name"],
                 })
             for tool in result.tools:
-                if tool.name == "platform_resolve_group":
+                if tool.name in PLATFORM_TOOLS:
                     schema = (getattr(tool, "input_schema", None)
                               or getattr(tool, "inputSchema", None)
                               or {"type": "object"})
@@ -216,7 +222,7 @@ class McpEdgeClient:
         call_headers = None
         if self._fixed_tools is not None:
             pinned = self._tool_bindings.get(name)
-            if name == "platform_resolve_group" and name in self._visible_platform_tools:
+            if name in PLATFORM_TOOLS and name in self._visible_platform_tools:
                 pinned = None
             elif pinned is None or name not in self._visible_tool_aliases:
                 raise McpEdgeError("MCP tool is not pinned or currently authorized")
