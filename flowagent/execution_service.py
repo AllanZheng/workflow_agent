@@ -32,21 +32,18 @@ from .execution.errors import classify_exception, error_response_body
 from .execution.planner import select_flow
 from .execution_authorization import (
     AuthorizationError,
-    AuthorizedChatModel,
-    DemoModelAuthorizer,
     ModelAuthorizer,
 )
 from .framework_capabilities import FrameworkCapabilitiesV2
 from .function_stage import FunctionTask, run_function_stage
 from .group_analysis import analyze_group
 from .llm import MockLLM
-from .local_tools import build_group_analysis_tool
 from .managed_config import load_managed_spec
 from .managed_config_v3 import ManagedSnapshotV3, parse_managed_snapshot_v3
 from .mcp_edge_client import McpEdgeClient
 from .security import bearer_ok, warn_if_disabled
 from .obs_log import RequestIdMiddleware, setup_logging
-from .skill_runtime import DemoSkillBodyLoader
+from .execution.v3_runtime import chat_runtime, execution_parts
 
 
 class StrictModel(BaseModel):
@@ -542,47 +539,9 @@ async def execute_managed(
     }
 
 
-# 构建 V3 执行的模型、MCP 客户端与 Skill 加载器（对话与功能阶段共用）。
-# English: Build the model, MCP client and skill loader of a V3 execution.
+# 同步、流式与功能阶段使用一致的 V3 快照和授权构造。
 def _v3_execution_parts(request: ExecutionRequest, model_authorizer, skill_loader):
-    config = request.agent_config
-    snapshot = config.snapshot_v3
-    authorizer = model_authorizer or DemoModelAuthorizer(
-        str(config.model_authorization_url), config.execution_token.get_secret_value(),
-        str(snapshot.runtime_id), credential_generation=config.model_credential_generation,
-    )
-    llm = AuthorizedChatModel(
-        _request_llm(None, config), authorizer,
-        execution_id=request.execution_id,
-        model_version_id=str(snapshot.model.version_id),
-        generation=request.binding_generation,
-    )
-    mcp_client = None
-    if snapshot.tools:
-        mcp_client = McpEdgeClient(
-            str(config.mcp_endpoint), config.execution_token.get_secret_value(),
-            fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
-            execution_id=request.execution_id, agent_id=str(snapshot.agent_id),
-            revision_id=str(snapshot.revision_id), runtime_id=str(snapshot.runtime_id),
-            generation=request.binding_generation,
-        )
-    resolved_skill_loader = skill_loader
-    if snapshot.skills and resolved_skill_loader is None:
-        resolved_skill_loader = DemoSkillBodyLoader(
-            str(config.model_authorization_url), config.execution_token.get_secret_value(),
-            str(snapshot.runtime_id),
-            fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
-        )
-    return snapshot, llm, mcp_client, resolved_skill_loader
-
-
-# 对话运行时的本地工具：快照授权了群分析输入工具时注册确定性群分析终端工具。
-# English: Local tools of a chat runtime (deterministic group analysis).
-def _chat_local_tools(request: ExecutionRequest, snapshot, llm, mcp_client) -> list:
-    if mcp_client is None or not any(
-            tool.remote_name == "fetch_group_analysis_input" for tool in snapshot.tools):
-        return []
-    return [build_group_analysis_tool(llm, mcp_client, request.analysis_target)]
+    return execution_parts(request, model_authorizer, skill_loader, _request_llm)
 
 
 # 执行功能阶段（function_stage）：结构化输出 + 知识依据统计。
@@ -624,12 +583,7 @@ async def _execute_managed_v3(
         raise ValueError("managed_snapshot_v3_required")
     snapshot, llm, mcp_client, resolved_skill_loader = _v3_execution_parts(
         request, model_authorizer, skill_loader)
-    runtime = ManagedAgentRuntime(
-        llm, mcp_client, skills=[skill.model_dump(mode="json") for skill in snapshot.skills],
-        skill_loader=resolved_skill_loader, execution_id=request.execution_id,
-        generation=request.binding_generation,
-        local_tools=_chat_local_tools(request, snapshot, llm, mcp_client),
-    )
+    runtime = chat_runtime(request, snapshot, llm, mcp_client, resolved_skill_loader)
     system_prompt = _with_analysis_target(snapshot.system_prompt, request.analysis_target)
     if request.memory_context is not None:
         if not snapshot.memory.read:
@@ -735,39 +689,9 @@ async def stream_managed(
     seq += 1
     config = request.agent_config
     if select_flow(config) == "qa":
-        snapshot = config.snapshot_v3
-        authorizer = model_authorizer or DemoModelAuthorizer(
-            str(config.model_authorization_url), config.execution_token.get_secret_value(),
-            str(snapshot.runtime_id), credential_generation=config.model_credential_generation,
-        )
-        llm = AuthorizedChatModel(
-            _request_llm(None, config), authorizer,
-            execution_id=request.execution_id,
-            model_version_id=str(snapshot.model.version_id),
-            generation=request.binding_generation,
-        )
-        mcp_client = None
-        if snapshot.tools:
-            mcp_client = McpEdgeClient(
-                str(config.mcp_endpoint), config.execution_token.get_secret_value(),
-                fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
-                execution_id=request.execution_id, agent_id=str(snapshot.agent_id),
-                revision_id=str(snapshot.revision_id), runtime_id=str(snapshot.runtime_id),
-                generation=request.binding_generation,
-            )
-        resolved_skill_loader = skill_loader
-        if snapshot.skills and resolved_skill_loader is None:
-            resolved_skill_loader = DemoSkillBodyLoader(
-                str(config.model_authorization_url), config.execution_token.get_secret_value(),
-                str(snapshot.runtime_id),
-                fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
-            )
-        runtime = ManagedAgentRuntime(
-            llm, mcp_client, skills=[skill.model_dump(mode="json") for skill in snapshot.skills],
-            skill_loader=resolved_skill_loader, execution_id=request.execution_id,
-            generation=request.binding_generation,
-            local_tools=_chat_local_tools(request, snapshot, llm, mcp_client),
-        )
+        snapshot, llm, mcp_client, resolved_skill_loader = _v3_execution_parts(
+            request, model_authorizer, skill_loader)
+        runtime = chat_runtime(request, snapshot, llm, mcp_client, resolved_skill_loader)
         reply = ""
         system_prompt = _with_analysis_target(snapshot.system_prompt, request.analysis_target)
         if request.memory_context is not None:
