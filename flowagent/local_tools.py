@@ -63,7 +63,8 @@ def build_group_analysis_tool(llm, mcp_client, target, *, requested_message: str
             "taxonomy_override": explicit_taxonomy or arguments.get("taxonomy") or "",
         }
         return await run_group_analysis(
-            parsed, target, llm, call_tool, lambda: _REPORT_SYSTEM, use_async=True)
+            parsed, target, llm, call_tool, lambda: _REPORT_SYSTEM, use_async=True,
+            requested_message=requested_message)
 
     return LocalTool(
         name=GROUP_ANALYSIS_TOOL_NAME,

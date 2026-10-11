@@ -11,6 +11,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .mcp_edge_client import McpEdgeError
+from .group_analysis_window import apply_requested_window
 from .template import render_template
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,7 @@ async def analyze_group(request, spec, llm, mcp_client) -> tuple[str, dict]:
     return await run_group_analysis(
         parsed, target, llm, mcp_client.call_tool,
         lambda: spec.nodes["report"].system or "",
+        requested_message=request.message,
     )
 
 
@@ -114,7 +116,12 @@ async def analyze_group(request, spec, llm, mcp_client) -> tuple[str, dict]:
 # V2 路径与 V3 终端工具共用这份实现，计数与比例永远由程序计算。
 # English: Deterministic pipeline after arguments are parsed (shared by V2 and the V3 tool).
 async def run_group_analysis(parsed: dict, target, llm, call_tool, report_system,
-                             *, use_async: bool = False) -> tuple[str, dict]:
+                             *, use_async: bool = False, requested_message: str = "") -> tuple[str, dict]:
+    # 原始请求的明确时间优先于模型参数；无效范围必须澄清，不能退回默认最近一天。
+    try:
+        parsed = apply_requested_window(parsed, requested_message)
+    except ValueError:
+        return "请确认分析时间范围：日期须有效、开始早于结束，且范围不超过 31 天。", {"analysis_result": None}
     for key in ("start", "end", "taxonomy_override"):
         if not isinstance(parsed.get(key, ""), str):
             raise ValueError(f"invalid_{key}")
