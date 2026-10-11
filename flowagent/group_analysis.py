@@ -162,6 +162,9 @@ async def run_group_analysis(parsed: dict, target, llm, call_tool, report_system
         target_id = resolved.get("conversation_id")
         if resolved.get("status") != "matched" or type(target_id) is not int or target_id < 1:
             raise ValueError("group_resolution_invalid")
+    # 用户只要求汇总时不接受模型擅自生成的分类口径；明确更换口径时仍保留澄清流程。
+    if requested_message and not re.search(r"分类|类别|口径|按[^。！？\n]*类", requested_message):
+        parsed["taxonomy_override"] = ""
     try:
         categories = _taxonomy(parsed.get("taxonomy_override") or "")
     except ValueError:
@@ -228,7 +231,13 @@ async def run_group_analysis(parsed: dict, target, llm, call_tool, report_system
                 if isinstance(summary, str) and summary.strip():
                     batch_summaries.append(summary[:1000])
                 break
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError) as exc:
+                # 重试携带具体约束，避免向模型重复同一提示；日志不记录消息正文。
+                logger.warning("group classification attempt %s failed: %s", attempt + 1, exc)
+                prompt += ("\n上次输出校验失败。请重新输出完整 JSON，assignments 必须恰好覆盖以下"
+                           f"message_ref 各一次：{json.dumps(sorted(expected), ensure_ascii=False)}。"
+                           f"category 只能从 {json.dumps(list(categories), ensure_ascii=False)} 中原样选择；"
+                           "不能改写引用、增加引用或遗漏消息。")
                 if attempt:
                     failed += len(batch)
 
@@ -254,7 +263,12 @@ async def run_group_analysis(parsed: dict, target, llm, call_tool, report_system
                            f"分类统计：{json.dumps(statistics, ensure_ascii=False)}。"
                            f"分批纪要：{json.dumps(batch_summaries, ensure_ascii=False)}"
                        ))]
-    if use_async:
+    # 有消息但全部分类失败时直接提示重试，不能让空统计被模型写成“没有消息”。
+    if failed and not assignments:
+        overview = SystemMessage(content=(
+            f"## 总结\n已读取 {len(messages)} 条群消息，但模型分类在自动重试后仍失败，"
+            "本次分析尚未完成。请重试。"))
+    elif use_async:
         overview = await llm.ainvoke(report_messages)
     else:
         overview = await asyncio.to_thread(llm.invoke, report_messages)
