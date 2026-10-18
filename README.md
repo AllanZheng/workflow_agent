@@ -56,6 +56,8 @@ uvicorn examples.api_server:app --port 8080   # POST /runs → HTTP 202 等待�
 
 ## 受管 execution-v1 服务的 PostgreSQL 检查点
 
+`run_execution.py` 的框架入站 token 校验默认关闭（`FRAMEWORK_AUTH_ENABLED=0`）。需要恢复时设置 `FRAMEWORK_AUTH_ENABLED=1` 和非空 `FRAMEWORK_INTERNAL_TOKEN`，重启服务后生效；独立的 MCP 与模型授权凭据继续按原方式使用。
+
 `Dockerfile.execution` 默认启用 PostgreSQL 检查点。运行 `run_execution.py` 时需注入
 `FLOWAGENT_DATABASE_URL`；连接串应指向部署 PostgreSQL 中由 Workflow saver 管理的隔离 schema。
 服务在 lifespan 中打开异步 saver 并执行幂等 `setup()`，缺少连接串或 PostgreSQL extra 时会拒绝启动。
