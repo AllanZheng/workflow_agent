@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "status": "frozen_20261020",
+  "status": "candidate_passed_20261020",
   "note": "M0 基线实测（baseline-v3 = ManagedAgentRuntime @ Qwen3.6-35B http://172.18.127.124:18007/v1，temp 0.2）后冻结。候选验收运行前不得改阈值放行；容差依据单轮运行的测量噪声设定并在各节注明。",
   "baseline_run": {
     "sample_agent_revision": "f47ff8d",
@@ -57,5 +57,30 @@
   "statistics": {
     "repeats": 1,
     "min_sample_note": "样本不足时报告不足以判定，不得虚构结论"
+  },
+  "candidate_run": {
+    "sample_agent_revision": "62d5609",
+    "verdict": "pass 6/6（check_acceptance.py）",
+    "results": {
+      "tau2": {
+        "avg_reward": 0.4667,
+        "pass": "14/30"
+      },
+      "financebench": {
+        "avg_score": 0.8433
+      },
+      "business": {
+        "case_pass": "15/15",
+        "entry_recall": 1.0,
+        "false_trigger_rate": 0.0,
+        "control_param_accuracy": 1.0
+      }
+    },
+    "artifacts": [
+      "benchmarks\\native-business-20261020-025435",
+      "benchmarks\\native-financebench-20261020-031205",
+      "benchmarks\\native-tau2-20261020-041553"
+    ],
+    "deterministic": "离线 313/0；wheel 安装 4/4；amd64 镜像 health/capabilities 冒烟；live L01 3/3（L02 待验收环境）"
   }
 }
