@@ -454,8 +454,10 @@ def main(argv=None) -> int:
     p_show = sub.add_parser("show", help="查看工作流结构与 Mermaid 图")
     p_show.add_argument("config")
 
-    p_run = sub.add_parser("run", help="运行工作流")
-    p_run.add_argument("config")
+    p_run = sub.add_parser("run", help="运行工作流（YAML 位置参数=旧引擎；--config=原生 V3）")
+    p_run.add_argument("config", nargs="?", help="旧引擎 YAML 配置路径")
+    p_run.add_argument("--config", dest="config_file", help="原生 V3 profile 配置（config.json）")
+    p_run.add_argument("--profile", help="原生 V3 profile 名称（默认取 default_profile）")
     p_run.add_argument("--input", default="{}", help='JSON 格式输入，如 {"ticket": "..."}')
     p_run.add_argument("--input-file", help="从 JSON 文件读取输入（优先于 --input）")
     p_run.add_argument("--thread-id", help="检查点线程ID（相同ID可续跑/恢复）")
@@ -467,6 +469,12 @@ def main(argv=None) -> int:
         default="text",
         help="输出格式：json 为机器可读结果（等待人工时退出码 3）",
     )
+
+    p_serve = sub.add_parser("serve", help="启动原生 V3 HTTP 服务（单 worker）")
+    p_serve.add_argument("--config", dest="config_file", required=True)
+    p_serve.add_argument("--profile")
+    p_serve.add_argument("--host", default="0.0.0.0")
+    p_serve.add_argument("--port", type=int, default=8080)
 
     p_resume = sub.add_parser("resume", help="恢复因 human 节点暂停的工作流")
     p_resume.add_argument("config")
@@ -487,10 +495,68 @@ def main(argv=None) -> int:
             return _cmd_show(args)
         if args.command == "resume":
             return _cmd_resume(args)
+        if args.command == "serve":
+            return _cmd_serve(args)
+        if getattr(args, "config_file", None):
+            return _cmd_run_native(args)
+        if not getattr(args, "config", None):
+            print("[用法错误] run 需要 YAML 位置参数或 --config 原生配置", file=sys.stderr)
+            return 2
         return _cmd_run(args)
     except ConfigError as e:
         print(f"[配置错误] {e}", file=sys.stderr)
         return 2
+
+
+# ---------------------------------------------------------------- 原生 V3 命令
+
+# 原生退出码：completed/needs_input/partial=0，degraded=2，failed=1，取消=130。
+_NATIVE_EXIT_CODES = {"completed": 0, "needs_input": 0, "partial": 0, "degraded": 2, "failed": 1, "cancelled": 130}
+
+
+def _cmd_run_native(args) -> int:
+    """flowagent run --config config.json --profile default --input request.json。"""
+    import asyncio
+    import json as _json
+
+    from .app import build_runner
+    from .config import load_profile_config, select_profile
+
+    config = load_profile_config(args.config_file)
+    profile = select_profile(config, args.profile)
+    runner = build_runner(profile)
+    if args.input_file:
+        payload = _json.loads(open(args.input_file, encoding="utf-8").read())
+    else:
+        payload = _json.loads(args.input or "{}")
+    from .core.contracts import RunInput
+
+    # 结果 JSON 走 stdout；运行期 INFO 日志降噪，避免污染机器可读输出。
+    import logging as _logging
+
+    _logging.getLogger("flowagent").setLevel(_logging.WARNING)
+    request = RunInput(
+        workflow=str(payload.get("workflow", "chat")),
+        inputs=dict(payload.get("inputs") or {}),
+        history=[dict(item) for item in payload.get("history") or []],
+        correlation_id=payload.get("correlation_id"),
+        continuation=payload.get("continuation"),
+    )
+    result = asyncio.run(runner.run(request))
+    print(_json.dumps(result.to_public_dict(), ensure_ascii=False, indent=2, default=str))
+    return _NATIVE_EXIT_CODES.get(result.status.value, 1)
+
+
+def _cmd_serve(args) -> int:
+    """flowagent serve --config config.json --host 0.0.0.0 --port 8080（单 worker）。"""
+    from .adapters.http import build_http_app
+
+    app = build_http_app({"config_path": args.config_file, "profile_name": args.profile})
+    print(f"[flowagent] native http://{args.host}:{args.port}", file=sys.stderr)
+    import uvicorn
+
+    uvicorn.run(app, host=args.host, port=args.port)
+    return 0
 
 
 
