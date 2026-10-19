@@ -147,17 +147,24 @@ class Runner:
         ctx.original_question = str(request.inputs.get("message") or request.inputs.get("question") or "")
         async with self._active_lock:
             self._active[ctx.run_id] = ctx
+        result: RunResult | None = None
         try:
             result = await self._execute_once(ctx, request)
         finally:
             ctx.usage.elapsed_ms = ctx.budget.elapsed_ms()
+            # 证据随结果传递（回执/知识状态消费；对外序列化时剥离）。
+            # 取消/异常路径 result 可能未产出——证据随上下文一起丢弃。
+            if result is not None:
+                result.recovery["_evidence_tool_calls"] = list(ctx.evidence.get("tool_calls") or [])
             async with self._active_lock:
                 self._active.pop(ctx.run_id, None)
             await ctx.reclaim_children()
             await ctx.aclose()
+        assert result is not None
         result.usage = ctx.usage
         # 唯一 run.finished：经 ctx.emit 保证 seq 连续递增，携带完整 RunResult。
-        ctx.emit(EventKind.RUN_FINISHED, {"result": result.to_public_dict()})
+        # "_result" 携带原对象供流式适配层取证据；不会进入对外序列化。
+        ctx.emit(EventKind.RUN_FINISHED, {"result": result.to_public_dict(), "_result": result})
         return result
 
     # ---- 内部：一次执行 ----

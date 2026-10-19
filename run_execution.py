@@ -29,7 +29,13 @@ def main() -> None:
         print(f"[run_execution] {exc}", file=sys.stderr)
         raise SystemExit(1) from None
     mcp_token = os.environ.get("AGENT_PLATFORM_MCP_WORKFLOW_TOKEN", "")
-    app = build_execution_app(token, mcp_token)
+    if os.environ.get("FLOWAGENT_NATIVE_PLATFORM", "0").strip() == "1":
+        # 原生 V3 平台服务（M3 起）：execution-v1 契约不变，内核换为新 Runner。
+        from flowagent.app import build_platform_service
+
+        app = build_platform_service(internal_token=token)
+    else:
+        app = build_execution_app(token, mcp_token)
     uvicorn.run(
         app,
         host=os.environ.get("WORKFLOW_HOST", "0.0.0.0"),

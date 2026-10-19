@@ -93,7 +93,8 @@ class OpenAICompatibleModel(Model):
         usage: dict[str, int] | None = None
 
         try:
-            stream = await self._ensure_client().chat.completions.create(**request)
+            created = self._ensure_client().chat.completions.create(**request)
+            stream = await created if hasattr(created, "__await__") else created
             async for chunk in stream:
                 usage = getattr(chunk, "usage", None) and _extract_usage(chunk.usage) or usage
                 if not getattr(chunk, "choices", None):
