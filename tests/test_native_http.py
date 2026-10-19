@@ -269,7 +269,7 @@ def test_health_reports_config_without_model_calls(tmp_path, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
-    assert body["workflows"] == ["chat"]
+    assert "chat" in body["workflows"]  # M2 起注册表含业务工作流
     assert body["fallback_owner"] == "local"
     assert body["max_active_runs"] == 2
     # 健康检查是纯配置检查：构造期与请求期都没有模型实例

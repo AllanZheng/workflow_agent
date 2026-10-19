@@ -113,7 +113,7 @@ def _function_names(request: dict) -> list[str]:
 def _terminal_tool(result: RunResult, seen: list[dict]) -> LocalTool:
     """构造返回给定 RunResult 的终端本地工具，并记录其入参。"""
 
-    async def handler(arguments):
+    async def handler(arguments, ctx=None):  # 处理器接收 (arguments, ctx)
         seen.append(arguments)
         return ToolResultData.terminal_result(result)
 

@@ -22,7 +22,6 @@ from tests.native_helpers import FakeModel
 
 # KERNEL-BUG: flowagent/app.py build_runner 以 workflow_enabled_map= 构造
 # RuntimePolicy，而 flowagent/core/runner.py 的 RuntimePolicy 只接受
-# workflow_enabled=，导致所有原生 run 在 build_runner 处 TypeError。
 _KERNEL_POLICY_BUG = pytest.mark.xfail(
     strict=False,
     reason=(
@@ -99,7 +98,6 @@ def _payload_from_stdout(text: str) -> dict:
     return json.loads(text[start:])
 
 
-@_KERNEL_COMPLETED_BUG
 def test_run_native_completed_prints_json_and_exits_0(
         monkeypatch, profile_path, capsys):
     """CLI-01：completed → stdout 本身是 JSON（可直接解析），退出码 0。"""
@@ -118,7 +116,6 @@ def test_run_native_completed_prints_json_and_exits_0(
     assert created and created[0].kwargs["model_name"] == "fake-model"
 
 
-@_KERNEL_POLICY_BUG
 def test_run_native_degraded_exits_2(monkeypatch, profile_path, capsys):
     """CLI-02：主阶段模型失败、兜底直连成功 → degraded，退出码 2。"""
     def turns():
@@ -141,7 +138,6 @@ def test_run_native_degraded_exits_2(monkeypatch, profile_path, capsys):
     assert payload["recovery"]["primary_error"]["code"] == "MODEL_UPSTREAM_ERROR"
 
 
-@_KERNEL_POLICY_BUG
 def test_run_native_fallback_failure_exits_1(monkeypatch, profile_path, capsys):
     """CLI-03：主阶段失败且兜底也失败（FALLBACK_FAILED）→ failed，退出码 1。"""
     def turns():

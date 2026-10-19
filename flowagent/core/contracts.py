@@ -161,7 +161,8 @@ class RunResult:
             "error": None if self.error is None else {
                 "code": self.error.code.value, "message": str(self.error)},
             "execution_path": self.execution_path,
-            "recovery": self.recovery,
+            "recovery": {k: v for k, v in self.recovery.items()
+                         if not k.startswith("_")},
             "clarification": None if self.clarification is None else {
                 "reason": self.clarification.reason,
                 "missing_fields": self.clarification.missing_fields,
