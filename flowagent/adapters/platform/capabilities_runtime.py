@@ -177,14 +177,32 @@ def _join_text(content: Any) -> str:
 
 
 async def _sdk_session(endpoint: str, headers: Mapping[str, str], timeout_seconds: float):
-    """真实 SDK 会话（惰性导入）；未启用执行服务的基础安装不加载 MCP 依赖。"""
+    """真实 SDK 会话（惰性导入；mcp 2.x Client 优先，回退 1.x）。"""
+    from contextlib import asynccontextmanager
+
+    try:
+        import httpx2
+        from mcp.client.client import Client as _MCPClient
+        from mcp.client.streamable_http import streamable_http_client as _new_transport
+
+        @asynccontextmanager
+        async def _cm_new():
+            async with httpx2.AsyncClient(
+                    headers=dict(headers), timeout=timeout_seconds) as http_client:
+                transport = _new_transport(endpoint, http_client=http_client)
+                async with _MCPClient(
+                        transport, read_timeout_seconds=timeout_seconds) as client:
+                    yield client
+
+        return _cm_new()
+    except ImportError:
+        pass
     import httpx
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
-    from contextlib import asynccontextmanager
 
     @asynccontextmanager
-    async def _cm():
+    async def _cm_old():
         async with httpx.AsyncClient(headers=dict(headers), timeout=timeout_seconds) as http_client:
             async with streamablehttp_client(endpoint, http_client=http_client) as streams:
                 read_stream, write_stream = streams
@@ -192,7 +210,7 @@ async def _sdk_session(endpoint: str, headers: Mapping[str, str], timeout_second
                     await session.initialize()
                     yield session
 
-    return _cm()
+    return _cm_old()
 
 
 # ---------------------------------------------------------------- Skill 装载

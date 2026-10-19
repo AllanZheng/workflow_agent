@@ -96,11 +96,8 @@ class McpSession(Tools):
             if self._factory is not None:
                 self._session_cm = self._factory(url, headers, self._config.timeout_seconds)
             else:
-                from mcp.client.streamable_http import streamablehttp_client
-
-                self._session_cm = streamablehttp_client(
-                    url, headers=headers, timeout=self._config.timeout_seconds,
-                )
+                self._session_cm = _sdk_transport(
+                    url, headers, self._config.timeout_seconds)
             entered = await self._session_cm.__aenter__()
             if isinstance(entered, (tuple, list)) and len(entered) == 3:
                 # 真实 SDK 形态：(read, write, _) → 包 ClientSession。
@@ -157,10 +154,12 @@ class McpSession(Tools):
                 continue
             canonical = normalize_tool_name(self._config.name, tool.name)
             self._catalog[canonical] = {"remote_name": tool.name}
+            schema = (getattr(tool, "input_schema", None)
+                      or getattr(tool, "inputSchema", None) or {})
             specs.append(ToolCallSpec(
                 name=canonical,
-                description=tool.description or "",
-                input_schema=tool.inputSchema if isinstance(tool.inputSchema, dict) else {},
+                description=(getattr(tool, "description", None) or ""),
+                input_schema=schema if isinstance(schema, dict) else {},
             ))
         return specs
 
@@ -182,11 +181,12 @@ class McpSession(Tools):
             return ToolResultData.unknown(f"mcp call timeout: {remote}")
         except Exception as exc:  # noqa: BLE001
             return ToolResultData.error(f"mcp call failed: {remote}: {exc}")
-        if getattr(result, "isError", False):
+        if getattr(result, "is_error", None) or getattr(result, "isError", False):
             code = getattr(result, "error_code", None)
             return ToolResultData.error(
                 f"mcp tool error: {remote}", code or ErrorCode.MCP_TOOL_ERROR.value)
-        structured = getattr(result, "structuredContent", None)
+        structured = (getattr(result, "structured_content", None)
+                      or getattr(result, "structuredContent", None))
         if structured is not None:
             return ToolResultData.success(structured)
         return ToolResultData.success(_join_text(result))
@@ -200,3 +200,33 @@ def _join_text(result: Any) -> str:
         if isinstance(text, str):
             parts.append(text)
     return "\n".join(parts) if parts else "(no content)"
+
+
+def _sdk_transport(url: str, headers: dict[str, str], timeout_seconds: float) -> Any:
+    """真实 SDK transport：mcp 2.x（Client + httpx2）优先，回退 1.x。
+
+    2.x 经 __aenter__ 得到带 list_tools/call_tool 的 Client；
+    1.x 得到 (read, write, _) 三元组（调用方包 ClientSession）。
+    """
+    from contextlib import asynccontextmanager
+
+    try:
+        import httpx2
+        from mcp.client.client import Client as _MCPClient
+        from mcp.client.streamable_http import streamable_http_client as _new_transport
+
+        @asynccontextmanager
+        async def _sdk_new():
+            async with httpx2.AsyncClient(
+                    headers=dict(headers), timeout=timeout_seconds) as http_client:
+                transport = _new_transport(url, http_client=http_client)
+                async with _MCPClient(
+                        transport, read_timeout_seconds=timeout_seconds) as client:
+                    yield client
+
+        return _sdk_new()
+    except ImportError:
+        pass
+    from mcp.client.streamable_http import streamablehttp_client as _old_transport
+
+    return _old_transport(url, headers=headers, timeout=timeout_seconds)
