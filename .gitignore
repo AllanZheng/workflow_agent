@@ -12,6 +12,5 @@ dist/
 /docs
 **/docs/
 
-# 测试目录不入库 / Test folders (not tracked)
+# 旧测试脚本目录不入库；tests/ 自 V3 重构起入库 / legacy test/ folder ignored; tests/ tracked since V3
 test/
-tests/
