@@ -2,8 +2,9 @@
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["flowagent"]
+[tool.setuptools.packages.find]
+# 自动发现 flowagent 全部子包（V3 内核拆分后 core/clients/workflows/adapters 必须分发）。
+include = ["flowagent*"]
 
 [tool.setuptools.dynamic]
 # 版本单一来源：flowagent/__init__.py 的 __version__（评审 4.8）
@@ -36,6 +37,11 @@ postgres = ["langgraph-checkpoint-postgres>=3.1,<4", "psycopg[binary]>=3.2"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "installation: 构建/安装验收（显式运行：-m installation）",
+  "live: 真实模型/MCP/Skill 调用（显式 opt-in）",
+  "db: 需要隔离测试数据库（AGENT_PLATFORM_*_TEST_DATABASE_URL）",
+]
 
 [tool.coverage.run]
 source = ["flowagent"]
