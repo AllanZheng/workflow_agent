@@ -67,6 +67,25 @@ class Tau2Mcp:
         self.calls.append((name, dict(arguments or {})))
         return self._bridge.dispatch(name, arguments)
 
+    # 原生内核 Tools 协议（list/call）：与旧协议（list_tools/call_tool）并存。
+    async def list(self) -> list[Any]:
+        from flowagent.core.contracts import ToolCallSpec
+
+        specs = []
+        for tool in self._tools:
+            desc = getattr(tool, "long_desc", None) or getattr(tool, "short_desc", "") or ""
+            try:
+                schema = tool.params.model_json_schema()
+            except Exception:  # noqa: BLE001 - 无参数模型兜底
+                schema = {"type": "object", "properties": {}}
+            specs.append(ToolCallSpec(name=tool.name, description=desc, input_schema=schema))
+        return specs
+
+    async def call(self, name: str, arguments: dict[str, Any]):
+        from flowagent.core.contracts import ToolResultData
+
+        return ToolResultData.success(await self.call_tool(name, arguments))
+
 
 class V3TelecomAgent(HalfDuplexAgent):
     """tau2 HalfDuplexAgent：每条用户消息触发一次 V3 运行时调用。"""
