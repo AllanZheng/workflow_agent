@@ -353,9 +353,15 @@ async def _consume_stream(
     ctx: Any, messages: list[dict[str, Any]], schemas: list[dict[str, Any]],
     limits: dict[str, Any] | None,
 ) -> Any:
-    """消费一次模型流：缓冲正文增量（进度事件），返回 completed ModelEvent。"""
+    """消费一次模型流：主阶段墙钟硬截止 + 缓冲正文增量，返回 completed。"""
+    from flowagent.core.context import aiter_with_deadline
+
     completed = None
-    async for event in ctx.model.stream(messages, schemas, limits or {}):
+    stream = aiter_with_deadline(
+        ctx.model.stream(messages, schemas, limits or {}),
+        max(1_000.0, ctx.budget.remaining_main_ms()),
+    )
+    async for event in stream:
         if event.kind == "text_delta":
             # 进度可实时显示；发布与否由最终轮判定（缓冲策略）。
             ctx.emit(EventKind.TEXT_DELTA, {"text": event.text})

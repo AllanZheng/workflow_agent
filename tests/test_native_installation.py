@@ -50,6 +50,10 @@ def installed_wheel(tmp_path_factory) -> dict:
     - 入口脚本一律在源码目录外运行。
     """
     wheel_dir = tmp_path_factory.mktemp("wheel")
+    # 清理 setuptools 构建缓存：避免旧模块从 build/ 混入最终 wheel。
+    import shutil as _shutil
+
+    _shutil.rmtree(PROJECT_ROOT / "build", ignore_errors=True)
     build = _run([sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "-w", str(wheel_dir)],
                  cwd=PROJECT_ROOT)
     assert build.returncode == 0, f"wheel build failed: {build.stderr[-2000:]}"
@@ -81,6 +85,19 @@ def test_wheel_contains_all_subpackages(installed_wheel) -> None:
     ):
         assert required in names, f"wheel missing {required}"
     assert not any(name.startswith(("tests/", "benchmarks/", "docs/")) for name in names)
+    # 最终制品：不得含旧执行模块（M4-1）。
+    old_modules = (
+        "flowagent/engine.py", "flowagent/nodes.py", "flowagent/state.py",
+        "flowagent/postgres.py", "flowagent/execution_service.py",
+        "flowagent/agent_runtime.py", "flowagent/model_response.py",
+        "flowagent/mcp_edge_client.py", "flowagent/skill_runtime.py",
+        "flowagent/local_tools.py", "flowagent/group_analysis.py",
+        "flowagent/function_stage.py", "flowagent/managed_config.py",
+        "flowagent/managed_config_v3.py", "flowagent/execution_authorization.py",
+    )
+    leftover = [name for name in old_modules if name in names]
+    assert not leftover, f"wheel 仍含旧执行模块：{leftover}"
+    assert not any(name.startswith("flowagent/execution/") for name in names)
 
 
 def test_python_entrypoint_from_outside_source(installed_wheel, tmp_path) -> None:

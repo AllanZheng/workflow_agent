@@ -243,3 +243,33 @@ def default_budget(clock: Callable[[], float] = _time.monotonic) -> Budget:
         deadline_ms=90_000, main_deadline_ms=60_000, fallback_timeout_ms=30_000,
         clock=clock,
     )
+
+
+async def aiter_with_deadline(iterator: Any, deadline_ms: float, *, code: str = "MODEL_TIMEOUT") -> Any:
+    """给异步迭代加总墙钟：超时抛 FlowAgentCoreError（默认 MODEL_TIMEOUT）。
+
+    用途：模型流式响应可能持续到达分块导致读超时永不触发（超长生成）；
+    预算的主阶段时限必须约束到单次调用的整体耗时。
+    """
+    import asyncio
+
+    from flowagent.core.contracts import ErrorCode, FlowAgentCoreError
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.001, deadline_ms / 1000)
+
+    async def _next(item: Any):
+        return await item.__anext__()
+
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise FlowAgentCoreError(code, f"stream deadline exceeded ({deadline_ms:.0f}ms)")
+        try:
+            value = await asyncio.wait_for(_next(iterator), remaining)
+        except asyncio.TimeoutError as exc:
+            raise FlowAgentCoreError(
+                code, f"stream deadline exceeded ({deadline_ms:.0f}ms)") from exc
+        except StopAsyncIteration:
+            return
+        yield value

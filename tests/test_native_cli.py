@@ -156,12 +156,14 @@ def test_run_native_fallback_failure_exits_1(monkeypatch, profile_path, capsys):
     assert payload["recovery"]["final_source"] == "fallback_failed"
 
 
-def test_run_without_yaml_or_config_is_usage_error(capsys):
-    """CLI-04：缺 YAML 位置参数且无 --config → 用法错误，退出码 2。"""
-    code = main(["run", "--input", "{}"])
-    err = capsys.readouterr().err
-    assert code == 2
-    assert "[用法错误]" in err
+def test_run_without_config_is_usage_error(capsys):
+    """CLI-04：缺 --config → argparse 用法错误，退出码 2。"""
+    import pytest as _pytest
+
+    with _pytest.raises(SystemExit) as excinfo:
+        main(["run", "--input", "{}"])
+    assert excinfo.value.code == 2
+    assert "required" in capsys.readouterr().err
 
 
 def test_run_unknown_profile_is_config_error(profile_path, capsys):
@@ -180,19 +182,3 @@ def test_serve_help_does_not_start_server(capsys):
     out = capsys.readouterr().out
     assert "--config" in out and "--port" in out
 
-
-def test_legacy_yaml_run_still_uses_old_engine(
-        monkeypatch, project_root, capsys):
-    """CLI-06：YAML 位置参数仍走旧引擎，绝不构造原生模型客户端。"""
-    def _forbidden(**kwargs):
-        raise AssertionError("旧引擎路径不应构造原生模型客户端")
-
-    monkeypatch.setattr("flowagent.app.OpenAICompatibleModel", _forbidden)
-
-    yaml_path = str(project_root / "configs" / "customer_service.yaml")
-    ticket = json.dumps({"ticket": "我要退款"}, ensure_ascii=False)
-    code = main(["run", yaml_path, "--input", ticket])
-    out = capsys.readouterr().out
-
-    assert code == 0
-    assert "客服处理结果" in out

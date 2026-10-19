@@ -393,8 +393,10 @@ class Runner:
         ]
         completed = None
         try:
-            stream = _aiter_with_timeout(
-                ctx.model.stream(messages, [], {"timeout_ms": window}), window / 1000)
+            from flowagent.core.context import aiter_with_deadline
+
+            stream = aiter_with_deadline(
+                ctx.model.stream(messages, [], {"timeout_ms": window}), window)
             async for event in stream:
                 if event.kind == "completed":
                     completed = event
@@ -406,18 +408,3 @@ class Runner:
             raise FlowAgentCoreError(ErrorCode.MODEL_INVALID_RESPONSE, "fallback empty response")
         return (completed.text or "").strip()
 
-
-async def _aiter_with_timeout(iterator: Any, timeout_s: float) -> AsyncIterator[Any]:
-    """给异步迭代套总时限（兜底窗口）；超时按 MODEL_TIMEOUT 处理。"""
-    deadline = asyncio.get_running_loop().time() + timeout_s
-    while True:
-        try:
-            item = await asyncio.wait_for(
-                __anext_wrapper(iterator), max(0.05, deadline - asyncio.get_running_loop().time()))
-        except StopAsyncIteration:
-            return
-        yield item
-
-
-async def __anext_wrapper(iterator: Any) -> Any:
-    return await iterator.__anext__()

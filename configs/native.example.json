@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "default_profile": "default",
+  "max_active_runs": 8,
+  "profiles": {
+    "default": {
+      "model": {
+        "provider": "openai_compatible",
+        "base_url_env": "MODEL_BASE_URL",
+        "api_key_env": "MODEL_API_KEY",
+        "name_env": "MODEL_NAME",
+        "parameters": {"temperature": 0}
+      },
+      "mcp_servers": [{
+        "name": "wiki",
+        "transport": "streamable_http",
+        "url_env": "WIKI_MCP_URL",
+        "headers_env": "WIKI_MCP_HEADERS_JSON",
+        "allowed_tools": ["hybrid_search", "get_knowledge", "list_chunks"]
+      }],
+      "workflows": {
+        "chat": {"enabled": true},
+        "group_analysis": {"enabled": true},
+        "consultation_stage": {"enabled": true},
+        "knowledge_query": {"enabled": true}
+      },
+      "workflow_bindings": {
+        "knowledge_query": {
+          "search": "wiki__hybrid_search",
+          "read": "wiki__get_knowledge",
+          "chunks": "wiki__list_chunks"
+        }
+      },
+      "group_analysis": {
+        "timezone": "Asia/Shanghai",
+        "default_days": 7,
+        "taxonomy": ["问题", "通知", "讨论", "闲聊", "其他"],
+        "taxonomy_aliases": {}
+      },
+      "limits": {
+        "deadline_ms": 90000,
+        "fallback_timeout_ms": 30000,
+        "model_calls": 24,
+        "tool_calls": 32,
+        "autonomous": {"model_calls": 12, "tool_calls": 16},
+        "context_bytes": 131072,
+        "classification_concurrency": 1
+      }
+    }
+  },
+  "platform_policy": {
+    "enabled": true,
+    "workflows": {"group_analysis": {"enabled": true}},
+    "limits": {
+      "model_calls": 24,
+      "tool_calls": 32,
+      "autonomous": {"model_calls": 12, "tool_calls": 16},
+      "context_bytes": 131072,
+      "classification_concurrency": 1
+    }
+  }
+}

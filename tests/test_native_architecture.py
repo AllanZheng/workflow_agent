@@ -222,8 +222,8 @@ def test_arch04_workflows_do_not_import_adapters_or_platform(path: Path) -> None
 # --------------------------------------------------------------------------
 # ARCH-05：M1 过渡期包入口仍导出旧引擎
 # --------------------------------------------------------------------------
-def test_arch05_package_entry_is_lazy_no_old_engine_at_import() -> None:
-    """M3 契约：`import flowagent` 不载入旧引擎；旧导出经 PEP 562 惰性解析。"""
+def test_arch05_package_entry_is_minimal() -> None:
+    """M4 契约：包入口不导入任何旧执行模块（M4 拆除后无遗留导出）。"""
     path = FLOWAGENT_DIR / "__init__.py"
     tree = _parse(path)
     module_level = {
@@ -232,24 +232,18 @@ def test_arch05_package_entry_is_lazy_no_old_engine_at_import() -> None:
         if isinstance(node, ast.ImportFrom)
         for module in _resolve_from(path, node)
     }
-    forbidden = {"flowagent.config", "flowagent.engine", "flowagent.llm", "flowagent.state"}
+    forbidden = {
+        "flowagent.config", "flowagent.engine", "flowagent.llm", "flowagent.state",
+        "flowagent.execution_service", "flowagent.agent_runtime", "flowagent.local_tools",
+    }
     assert not (forbidden & module_level), (
-        f"包入口不得急切导入旧引擎：{sorted(forbidden & module_level)}")
-    # 惰性出口存在且旧名仍在映射表中（M4 拆除时同步更新）。
-    assert any(isinstance(node, ast.FunctionDef) and node.name == "__getattr__"
-               for node in tree.body)
-    mapping = next(
-        (node.value for node in tree.body
-         if isinstance(node, ast.Assign)
-         and any(getattr(t, "id", None) == "_LEGACY_EXPORTS" for t in node.targets)),
-        None,
-    )
-    assert mapping is not None and "WorkflowEngine" in ast.dump(mapping)
+        f"包入口导入了已退役模块：{sorted(forbidden & module_level)}")
+    # 旧模块文件本身也不应存在。
+    for name in ("engine.py", "nodes.py", "state.py", "execution_service.py",
+                 "agent_runtime.py", "local_tools.py", "managed_config.py"):
+        assert not (FLOWAGENT_DIR / name).exists(), f"退役模块仍存在：{name}"
 
 
-# --------------------------------------------------------------------------
-# ARCH-06：内核入口与 execution_service 解耦
-# --------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "path",
     [CORE_DIR / "__init__.py", FLOWAGENT_DIR / "app.py"],
