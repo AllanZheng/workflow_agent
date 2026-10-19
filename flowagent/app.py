@@ -21,6 +21,9 @@ from flowagent.core.context import RunContext
 from flowagent.core.runner import Runner, RuntimePolicy
 from flowagent.core.contracts import ToolCallSpec, ToolResultData, Tools
 from flowagent.workflows.chat import build_chat_workflow
+from flowagent.workflows.consultation import build_consultation_workflow
+from flowagent.workflows.group_analysis import build_group_analysis_workflow
+from flowagent.workflows.knowledge import build_knowledge_workflow
 
 
 class CompositeTools(Tools):
@@ -68,7 +71,12 @@ class CompositeTools(Tools):
 def build_runner(
     profile: dict, *, fallback_owner: str = "local", extra_workflows: dict | None = None
 ) -> Runner:
-    """从 profile 组装 Runner：模型/预算/策略/工作流注册表。"""
+    """从 profile 组装 Runner：模型/预算/策略/工作流注册表。
+
+    工作流注册：chat（始终）+ group_analysis/consultation/knowledge（按配置）。
+    chat 的终端业务工具只在对应工作流注册且启用、且取数工具可见时注入
+    （不可用流程不作为同名终端工具暴露，防递归绕回）。
+    """
     model_spec = resolve_model_spec(profile)
     mcp_configs = build_mcp_configs(profile)
     policy = RuntimePolicy(
@@ -76,7 +84,22 @@ def build_runner(
         max_active_runs=int(profile.get("max_active_runs", 8)),
     )
     workflows = {"chat": build_chat_workflow()}
+    group_cfg = profile.get("group_analysis") or {}
+    workflows["group_analysis"] = build_group_analysis_workflow(config=group_cfg)
+    workflows["consultation_stage"] = build_consultation_workflow()
+    bindings = (profile.get("workflow_bindings") or {}).get("knowledge_query")
+    workflows["knowledge_query"] = build_knowledge_workflow(bindings=bindings)
     workflows.update(extra_workflows or {})
+
+    # 可用注册表 = 注册且策略启用（依赖可用性在运行时 preflight 判定）。
+    available = {
+        name for name, spec in workflows.items()
+        if name == "chat" or policy.is_enabled(name)
+    }
+    chat_workflow = build_chat_workflow(
+        terminal_tools=_chat_terminal_tools(workflows, available, group_cfg),
+    )
+    workflows["chat"] = chat_workflow
 
     def context_factory() -> RunContext:
         # 每次执行独立 Model 实例与 MCP 会话（执行隔离）；tools 于执行内打开。
@@ -95,6 +118,41 @@ def build_runner(
         workflows=workflows, context_factory=context_factory,
         fallback_owner=fallback_owner, policy=policy,
     )
+
+
+def _chat_terminal_tools(
+    workflows: dict, available: set[str], group_cfg: dict[str, Any]
+) -> list[Any]:
+    """chat 的终端业务工具：群分析（可用时注入；模型参数不决定控制值）。"""
+    from flowagent.core.agent import LocalTool
+    from flowagent.core.contracts import ToolResultData
+
+    tools: list[Any] = []
+    if "group_analysis" in available:
+        async def _run_group(arguments: dict[str, Any], ctx: Any) -> ToolResultData:
+            from flowagent.workflows.group_analysis import run_group_analysis_via_tool
+
+            result = await run_group_analysis_via_tool(arguments, ctx, group_cfg)
+            return ToolResultData.terminal_result(result)
+
+        tools.append(LocalTool(
+            name="analyze_group_messages",
+            description=(
+                "群消息分析与统计。参数中的时间/分类仅作参考；实际窗口与口径由系统按"
+                "用户原话确定，缺失时向用户澄清。"),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "conversation_id": {"type": "integer"},
+                    "days": {"type": "integer"},
+                    "start": {"type": "string"}, "end": {"type": "string"},
+                    "taxonomy": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            handler=_run_group,
+            terminal=True,
+        ))
+    return tools
 
 
 def _attach_lazy_tools(ctx: RunContext, mcp_configs: list[McpServerConfig]) -> None:
@@ -129,3 +187,41 @@ def build_app(settings: dict) -> Any:
     from flowagent.adapters.http import build_http_app
 
     return build_http_app(settings)
+
+
+def build_platform_service(
+    *,
+    platform_policy: dict[str, Any] | None = None,
+    internal_token: str = "",
+    build_id: str = "dev",
+) -> Any:
+    """平台 V3 服务：execution-v1 路由 + 请求级能力（ContextVar）+ caller 兜底。
+
+    平台模式不继承本地 profile 的模型/凭据/工具（技术方案 §2）；
+    预算按请求 deadline 与 platform_policy 取交集。
+    """
+    from flowagent.adapters.platform import context as platform_context
+    from flowagent.adapters.platform.routes import build_platform_app
+    from flowagent.workflows.consultation import build_consultation_workflow
+    from flowagent.workflows.group_analysis import build_group_analysis_workflow
+    from flowagent.workflows.knowledge import build_knowledge_workflow
+    from flowagent.core.runner import Runner, RuntimePolicy
+
+    policy_dict = platform_policy or {}
+    workflows = {
+        "chat": build_chat_workflow(),
+        "group_analysis": build_group_analysis_workflow(config={}),
+        "consultation_stage": build_consultation_workflow(),
+        "knowledge_query": build_knowledge_workflow(bindings=None),
+    }
+    enabled = policy_dict.get("workflow_enabled_map") or {}
+    runner = Runner(
+        workflows=workflows,
+        context_factory=platform_context.context_factory(policy_dict.get("limits") and policy_dict or None),
+        fallback_owner="caller",
+        policy=RuntimePolicy(workflow_enabled=enabled),
+    )
+    return build_platform_app(
+        runner=runner, internal_token=internal_token,
+        platform_policy=policy_dict or None, build_id=build_id,
+    )

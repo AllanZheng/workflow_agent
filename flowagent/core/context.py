@@ -25,6 +25,14 @@ from flowagent.core.contracts import (
 )
 
 ContextBytes = 131_072  # 每次模型请求的 UTF-8 字节预算（非性能承诺）
+EvidenceValueLimit = 4_000  # 单条工具结果入证据的字符上限（防超长材料膨胀）
+
+
+def _bounded(value: Any) -> Any:
+    """证据值有界化：超长文本截断并标注。"""
+    if isinstance(value, str) and len(value) > EvidenceValueLimit:
+        return value[:EvidenceValueLimit] + f"…(truncated {len(value)} chars)"
+    return value
 
 
 class BudgetExceeded(PermissionError):
@@ -212,11 +220,15 @@ class RunContext:
 
     # ---- 证据 ----
     def record_tool(
-        self, name: str, arguments: dict[str, Any], result: ToolResultData, *, remote: bool = True
+        self, name: str, arguments: dict[str, Any], result: ToolResultData, *,
+        remote: bool = True, remote_name: str | None = None,
     ) -> None:
         self.evidence.setdefault("tool_calls", []).append({
-            "name": name, "arguments": arguments, "status": result.status,
+            "name": name, "remote_name": remote_name or name,
+            "arguments": arguments, "status": result.status,
             "error_code": result.error_code, "remote": remote,
+            # 结果值入证据（知识状态/引用过滤依据；有界截断防超长材料）。
+            "result_value": _bounded(result.value),
         })
 
 

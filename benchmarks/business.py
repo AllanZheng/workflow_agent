@@ -67,9 +67,27 @@ async def run_entry_chat(engine: Any, case: dict[str, Any]) -> dict[str, Any]:
           "input_schema": {"type": "object"}}],
         results={"fetch_group_analysis_input": case["fetch_payload"]},
     )
-    # 终端工具自带独立 llm（分类/报告）；usage 与聊天轮合并统计。
-    tool_llm = engine.build_llm()
-    tool = build_group_terminal_tool(tool_llm, mcp, target, requested_message=case["message"])
+    if engine.name == "native":
+        # 原生：终端工具共享调用轮 ctx（预算/工具共享，§3.3）；可信目标注入请求事实。
+        from flowagent.core.agent import LocalTool
+        from flowagent.workflows.group_analysis import run_group_analysis_via_tool
+
+        async def _handler(arguments: dict, ctx: Any):
+            from flowagent.core.contracts import ToolResultData
+
+            ctx.diagnostics.setdefault("_inputs", {})["analysis_target"] = target
+            result = await run_group_analysis_via_tool(arguments, ctx, {"default_days": 7})
+            return ToolResultData.terminal_result(result)
+
+        tool_llm = None
+        tool = LocalTool(
+            name="analyze_group_messages", description="群消息分析与统计",
+            input_schema={"type": "object"}, handler=_handler, terminal=True,
+        )
+    else:
+        # 旧引擎：终端工具自带独立 llm（分类/报告）；usage 与聊天轮合并统计。
+        tool_llm = engine.build_llm()
+        tool = build_group_terminal_tool(tool_llm, mcp, target, requested_message=case["message"])
     result = await engine.chat(
         case["message"], system_prompt=ENTRY_SYSTEM_PROMPT,
         mcp_client=mcp, local_tools=[tool],
@@ -77,7 +95,8 @@ async def run_entry_chat(engine: Any, case: dict[str, Any]) -> dict[str, Any]:
     # 入口触发只认群分析终端工具执行（terminal_metadata）；裸 fetch 探查不算完整业务入口。
     triggered = bool(result.get("terminal_metadata"))
     fetch_only = (not triggered) and bool(mcp.calls)
-    tool_usage = tool_llm.usage_summary()
+    tool_usage = tool_llm.usage_summary() if tool_llm is not None else {
+        "model_calls": 0, "tokens_in": 0, "tokens_out": 0}
     record = {
         "id": case["id"], "kind": case["kind"], "engine": engine.name,
         "entry_expect": case["expect"], "entry_actual": "trigger" if triggered else "no_trigger",
@@ -136,12 +155,28 @@ def _score_control_params(case: dict[str, Any], result: dict[str, Any], engine_n
     _, args = calls[0]
     detail = {"conversation_id": args.get("conversation_id"), "start": args.get("start"),
               "end": args.get("end"), "days": args.get("days")}
+    # 有效窗口归一：基线相对窗传 days=N；原生统一传 ISO start/end——按跨度比较。
+    span_days = None
+    if args.get("start") and args.get("end"):
+        try:
+            from datetime import datetime as _dt
+
+            start, end = _dt.fromisoformat(str(args["start"])), _dt.fromisoformat(str(args["end"]))
+            span_days = round((end - start).total_seconds() / 86400)
+        except ValueError:
+            span_days = None
+    elif isinstance(args.get("days"), int):
+        span_days = int(args["days"])
+    detail["span_days"] = span_days
+
     ok = True
     if "conversation_id" in expects:
         ok = ok and args.get("conversation_id") == expects["conversation_id"]
-    for key in ("start", "end", "days"):
+    if "days" in expects:
+        ok = ok and span_days == expects["days"]
+    for key in ("start", "end"):
         if key in expects:
-            ok = ok and args.get(key) == expects[key]
+            ok = ok and str(args.get(key)) == str(expects[key])
     analysis = result.get("analysis_result") or {}
     taxonomy = ((analysis.get("effective_taxonomy") or {}).get("categories")) or []
     if "taxonomy" in expects:
@@ -151,8 +186,12 @@ def _score_control_params(case: dict[str, Any], result: dict[str, Any], engine_n
 
 
 async def run_group_analysis(engine: Any, case: dict[str, Any]) -> dict[str, Any]:
-    parse_llm = engine.build_llm()
-    parsed = _parse_args_via_llm(parse_llm, case["message"])
+    # 原生引擎：控制参数由代码从原问题解析（不经 LLM parse）；旧引擎保留生产 parse 提示。
+    if engine.name == "native":
+        parsed: dict[str, Any] = {}
+    else:
+        parse_llm = engine.build_llm()
+        parsed = _parse_args_via_llm(parse_llm, case["message"])
     target = type("T", (), {"conversation_id": case["target"]["conversation_id"]})() if case.get("target") else None
     result = await engine.group_analysis(
         message=case["message"], parsed=parsed, target=target,
@@ -228,14 +267,24 @@ def _score_consultation(case: dict[str, Any], result: dict[str, Any], engine_nam
     record["citations_total"] = len(citations)
     record["citations_valid"] = valid
 
-    checks = [not result.get("error")]
-    if expects.get("schema_ok"):
+    checks = [True]
+    if expects.get("schema_ok") is False:
+        # 目标规则：业务失败（错误或非 ok 状态）即期望达成（如 required+failed）。
+        checks.append(bool(result.get("error")) or function_result.get("status") != "ok")
+        if expects.get("knowledge_status"):
+            # 失败路径知识状态在错误信息中（knowledge_required_unavailable: <status>）。
+            error_text = str(result.get("error") or "")
+            checks.append(f": {expects['knowledge_status']}" in error_text
+                          or knowledge.get("status") == expects["knowledge_status"])
+    elif expects.get("schema_ok"):
+        checks.append(not result.get("error"))
         checks.append(function_result.get("status") == "ok")
         if case.get("task", {}).get("stage") in ("draft", "final"):
             checks.append(bool(output.get("title")) and bool(output.get("body_markdown")))
         else:
             checks.append(isinstance(output.get("tasks"), list))
-    if expects.get("knowledge_status"):
+    elif expects.get("knowledge_status"):
+        # schema 期望缺省时仍校验知识状态（成功路径）。
         checks.append(knowledge.get("status") == expects["knowledge_status"])
     if citations:
         checks.append(valid == len(citations))

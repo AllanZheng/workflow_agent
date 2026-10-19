@@ -38,6 +38,10 @@ class BenchMcp:
     def alias_of(self, remote: str) -> str:
         return next(a for a, name in self.aliases.items() if name == remote)
 
+    def remote_name(self, name: str) -> str | None:
+        """别名 → 远端名（证据记录/知识状态判定用）。"""
+        return self.aliases.get(name, name)
+
     async def list_tools(self) -> list[dict[str, Any]]:
         out = []
         for alias, remote in self.aliases.items():
@@ -61,16 +65,32 @@ class BenchMcp:
             return result(arguments or {})
         return result
 
+    # 原生内核 Tools 协议：list 返回 ToolCallSpec；与旧协议并存。
+    async def list(self) -> list[Any]:
+        from flowagent.core.contracts import ToolCallSpec
+
+        rows = await self.list_tools()
+        return [ToolCallSpec(name=r["name"], description=r["description"],
+                             input_schema=r["input_schema"]) for r in rows]
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> Any:
+        from flowagent.core.contracts import ToolResultData
+
+        try:
+            value = await self.call_tool(name, arguments)
+            return ToolResultData.success(value)
+        except Exception as exc:  # noqa: BLE001 - 原生协议要求错误为结果而非异常
+            return ToolResultData.error(f"{type(exc).__name__}: {exc}")
+
 
 def build_engine(name: str, manifest: dict[str, Any]) -> Any:
-    """引擎工厂：新引擎接入时在此登记，run.py 的 --engine 与 manifest.engine 必须一致。"""
+    """引擎工厂：baseline-v3（旧 ManagedAgentRuntime）/ native（新内核 Runner）。"""
     if name == "baseline-v3":
         from benchmarks.baseline_v3 import BaselineV3Engine
         return BaselineV3Engine(manifest)
     if name == "native":
-        raise SystemExit(
-            "native engine 尚未实现（M1 内核落地后接入）；当前仅支持 baseline-v3"
-        )
+        from benchmarks.native_engine import NativeEngine
+        return NativeEngine(manifest)
     raise SystemExit(f"unknown engine: {name}")
 
 

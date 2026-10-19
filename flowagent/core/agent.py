@@ -48,7 +48,7 @@ class LocalTool:
     name: str
     description: str = ""
     input_schema: dict[str, Any] = field(default_factory=dict)
-    handler: Callable[[dict[str, Any]], Awaitable[ToolResultData]] | None = None
+    handler: Callable[[dict[str, Any], Any], Awaitable[ToolResultData]] | None = None
     terminal: bool = False
 
 
@@ -88,7 +88,7 @@ class ToolRegistry:
             ))
         return specs
 
-    async def call_local(self, name: str, arguments: dict[str, Any]) -> ToolResultData:
+    async def call_local(self, name: str, arguments: dict[str, Any], ctx: Any = None) -> ToolResultData:
         if name == _LOAD_SKILL and self.skills is not None:
             skill_id = str(arguments.get("skill_id") or "")
             try:
@@ -102,7 +102,7 @@ class ToolRegistry:
         tool = self.local.get(name)
         if tool is None or tool.handler is None:
             return ToolResultData.error(f"unknown local tool: {name}", ErrorCode.TOOL_ARGUMENT_INVALID.value)
-        return await tool.handler(arguments)
+        return await tool.handler(arguments, ctx)
 
     @property
     def loaded_skills(self) -> list[str]:
@@ -220,7 +220,8 @@ async def run_agent(
         first = tool_calls[0]
         if _is_terminal(registry, first["name"]):
             ctx.emit(EventKind.STEP_STARTED, {"terminal_tool": first["name"]})
-            result = await registry.call_local(first["name"], parse_tool_call_arguments(first))
+            result = await registry.call_local(
+                first["name"], parse_tool_call_arguments(first), ctx)
             ctx.record_tool(first["name"], {}, result, remote=False)
             ctx.emit(EventKind.TOOL_FINISHED, {"name": first["name"], "status": result.status})
             terminal = result.terminal
@@ -254,7 +255,8 @@ async def run_agent(
                 seen_effective.add(key)
 
             result = await _execute_remote(ctx, registry, name, arguments)
-            ctx.record_tool(name, arguments, result)
+            ctx.record_tool(name, arguments, result,
+                            remote_name=_remote_name_of(registry, name))
             logger.info(
                 "tool_finished run_id=%s step=%s call=%s status=%s code=%s",
                 ctx.run_id, ctx.step, name, result.status, result.error_code,
@@ -320,7 +322,7 @@ async def _execute_remote(
 ) -> ToolResultData:
     """远程/本地普通工具执行：额度预占 + 结果四态（load_skill 走本地）。"""
     if name == _LOAD_SKILL or name in registry.local:
-        result = await registry.call_local(name, arguments)
+        result = await registry.call_local(name, arguments, ctx)
         if name == _LOAD_SKILL and result.status == "success":
             ctx.usage.skill_loads += 1
         return result
@@ -334,6 +336,17 @@ async def _execute_remote(
             ErrorCode.TOOL_BUDGET_EXCEEDED, str(exc)) from exc
     ctx.usage.mcp_attempts += 1
     return await registry.remote.call(name, arguments)
+
+
+def _remote_name_of(registry: "ToolRegistry", name: str) -> str:
+    """解析工具别名对应的远端名（证据/知识状态判定用；无解析器时原样返回）。"""
+    resolver = getattr(registry.remote, "remote_name", None)
+    if callable(resolver):
+        try:
+            return str(resolver(name) or name)
+        except Exception:  # noqa: BLE001 - 解析失败不阻塞调用
+            return name
+    return name
 
 
 async def _consume_stream(

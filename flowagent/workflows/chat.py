@@ -34,6 +34,13 @@ def build_chat_workflow(
         if not message.strip():
             raise FlowAgentCoreError(ErrorCode.INVALID_INPUT, "chat requires message")
         history = [dict(item) for item in inputs.get("history") or []]
+        # 请求级事实（analysis_target/continuation 等）供终端业务工具读取；
+        # 不含凭据；模型参数不决定控制值。
+        ctx.diagnostics["_inputs"] = {
+            "analysis_target": inputs.get("analysis_target"),
+            "request_metadata": inputs.get("request_metadata"),
+            "continuation": inputs.get("continuation"),
+        }
         registry = ToolRegistry(remote=ctx.tools, skills=ctx.skills, local=tools)
         outcome: AgentOutcome = await run_agent(
             ctx, system_prompt=prompt, user_message=message, history=history,
