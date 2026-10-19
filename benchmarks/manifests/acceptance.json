@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "status": "frozen_20261020",
+  "note": "M0 基线实测（baseline-v3 = ManagedAgentRuntime @ Qwen3.6-35B http://172.18.127.124:18007/v1，temp 0.2）后冻结。候选验收运行前不得改阈值放行；容差依据单轮运行的测量噪声设定并在各节注明。",
+  "baseline_run": {
+    "sample_agent_revision": "f47ff8d",
+    "manifest": "benchmarks/manifests/baseline.json",
+    "artifacts": [
+      "artifacts/benchmarks/baseline-v3-business-20261020-002023",
+      "artifacts/benchmarks/baseline-v3-financebench-20261020-002110",
+      "artifacts/benchmarks/baseline-v3-tau2-20261020-004349"
+    ],
+    "history_reference_note": "旧 YAML 引擎 @18008 成绩仅参考：fb 0.8133/0.6633、tau2 0.40；auto_cc 对照：fb 0.88、tau2 0.4667。本轮 tau2 与 auto_cc 历史值一致（同模型/同用户模拟器/同 seed）。"
+  },
+  "deterministic": {
+    "rule": "确定性回归、V3 契约、安装检查全部通过；重复直连/重复写、越权/越预算调用、多终态、伪造统计或引用为阻断项"
+  },
+  "tau2": {
+    "baseline_avg_reward": 0.4667,
+    "baseline_pass_count": 14,
+    "target_min_avg_reward": 0.42,
+    "num_tasks": 30,
+    "tolerance": "允许下降 0.05（约 1.5 题测量噪声）；单轮运行"
+  },
+  "financebench": {
+    "baseline_avg_score": 0.8133,
+    "target_min_avg_score": 0.78,
+    "num": 150,
+    "tolerance": "允许下降 0.03（judge 单轮噪声）；单轮运行"
+  },
+  "business": {
+    "baseline_case_pass": "15/15",
+    "entry_recall_baseline": 1.0,
+    "false_trigger_baseline": 0.0,
+    "control_param_accuracy_baseline": 1.0,
+    "entry_recall_min": 0.75,
+    "false_trigger_max": 0.25,
+    "control_param_accuracy_min": 0.9,
+    "case_pass_min_ratio": 0.8,
+    "tolerance": "入口样本量小（正负各 2），阈值留单样本容差；候选阶段可扩充冻结样本后另行冻结（须先于候选运行）"
+  },
+  "capacity": {
+    "classified_per_90s_min": null,
+    "batch_ms_max": null,
+    "note": "M0 未做容量专项测量；M1/M2 内核落地后补测单批耗时并回填（候选运行前）"
+  },
+  "performance": {
+    "business_avg_ms": 2807,
+    "business_p95_ms": 4343,
+    "financebench_avg_ms": 1538,
+    "financebench_p95_ms": 3856,
+    "tau2_avg_ms": 33020,
+    "tau2_p95_ms": 69670,
+    "p95_regression_guard_x": 3.0,
+    "note": "p95 上限 = 基线 × 3.0（回归护栏，非性能承诺；同一端点/模型下比较）"
+  },
+  "statistics": {
+    "repeats": 1,
+    "min_sample_note": "样本不足时报告不足以判定，不得虚构结论"
+  }
+}

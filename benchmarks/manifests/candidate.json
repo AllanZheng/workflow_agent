@@ -1,0 +1,27 @@
+{
+  "engine": "native",
+  "model": {
+    "provider": "openai_compatible",
+    "base_url": "http://172.18.127.124:18007/v1",
+    "model_name": "Qwen3.6-35B",
+    "api_key": "token-abc123",
+    "temperature": 0.2
+  },
+  "judge": {
+    "base_url": "http://172.18.127.124:18007/v1",
+    "model_id": "Qwen3.6-35B",
+    "api_key": "token-abc123"
+  },
+  "user_simulator_llm": {
+    "model": "openai/Qwen3.6-35B",
+    "api_base": "http://172.18.127.124:18007/v1",
+    "api_key": "token-abc123"
+  },
+  "suites": {
+    "financebench": {"limit": null},
+    "tau2": {"num_tasks": 30, "evaluation_type": "all", "max_steps": 40, "max_errors": 8, "seed": 42},
+    "business": {"cases": "benchmarks/cases/business.jsonl"}
+  },
+  "notes": "候选 manifest：与 baseline.json 同模型/温度/预算/判分，engine 待 M1 内核落地后启用",
+  "venv": "test/auto_cc_benchmarks/.venv"
+}

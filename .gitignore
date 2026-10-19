@@ -9,6 +9,7 @@ coverage.xml
 htmlcov/
 dist/
 *.egg-info/
+artifacts/
 /docs
 **/docs/
 
