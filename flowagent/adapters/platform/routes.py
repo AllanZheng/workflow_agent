@@ -28,22 +28,51 @@ from flowagent.core.runner import Runner
 
 logger = logging.getLogger("flowagent.platform.routes")
 
-_CAPABILITIES_V2 = {
-    "framework_id": "workflow",
-    "runtime_mode": "workflow_managed",
-    "snapshot": {"versions": [3]},
-    "features": {
-        "respond": True,
-        "respond_stream": True,
-        "reset": True,
-        "cancel": "implemented",
-        "config_receipt": True,
-        "memory_context_v1": True,
-        "execution_scoped_mcp": True,
-        "skills": {"catalog_and_load_v1": True},
-        "model_pre_call_authorization": True,
-    },
-}
+# 能力清单：与平台 FrameworkCapabilitiesV1/V2（strict, extra=forbid）逐字段对齐。
+_APPLIED_FIELDS = [
+    "workflow.yaml", "system_prompt", "skills", "schema_version",
+    "agent_id", "revision_id", "runtime_id", "config_digest",
+    "model", "tools", "memory",
+]
+_EDITABLE_FIELDS = [
+    "adapter.endpoint", "adapter.timeout_ms", "model", "system_prompt",
+    "workflow", "mcp_tools", "skills", "memory", "runtime.history_limit",
+]
+
+
+def _capabilities_v1(adapter_version: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "framework_id": "workflow",
+        "adapter_version": adapter_version,
+        "runtime_mode": "workflow_managed",
+        "basic": {"respond": True, "stream": True, "config_receipt": True},
+        "context": {"history_import": "messages", "memory_context_versions": [1]},
+        "control": {"versions": [], "hitl_modes": [], "steering_modes": [],
+                    "cancel": "implemented", "reset": "implemented"},
+        "tools": {"managed_mcp": True},
+        "applied_config_fields": ["workflow.yaml", "system_prompt", "skills"],
+    }
+
+
+def _capabilities_v2(adapter_version: str) -> dict[str, Any]:
+    return {
+        "schema_version": 2,
+        "framework_id": "workflow",
+        "adapter_version": adapter_version,
+        "runtime_mode": "workflow_managed",
+        "snapshot": {"versions": [3]},
+        "basic": {"respond": True, "stream": True, "config_receipt": True},
+        "context": {"history_import": "messages", "memory_context_versions": [1]},
+        "control": {"versions": [], "hitl_modes": [], "steering_modes": [],
+                    "cancel": "implemented", "reset": "implemented"},
+        "tools": {"managed_mcp": True, "execution_scoped_mcp": True},
+        "skills": {"catalog_versions": [1], "load_versions": [1], "session_pinning": True},
+        "references": {"uuid": True},
+        "models": {"pre_call_authorization": True},
+        "applied_config_fields": _APPLIED_FIELDS,
+        "editable_fields": _EDITABLE_FIELDS,
+    }
 
 
 def build_platform_app(
@@ -172,7 +201,10 @@ def build_platform_app(
         return JSONResponse(outcome)
 
     async def _capabilities_body() -> dict[str, Any]:
-        return {**_CAPABILITIES_V2, "adapter_version": build_id}
+        return _capabilities_v1(build_id)
+
+    async def _capabilities_v2_body() -> dict[str, Any]:
+        return _capabilities_v2(build_id)
 
     @app.get("/capabilities")
     async def capabilities(request: Request) -> Any:
@@ -184,7 +216,7 @@ def build_platform_app(
     async def capabilities_v2(request: Request) -> Any:
         if not _bearer_ok(request):
             raise HTTPException(status_code=401, detail="unauthorized")
-        return JSONResponse(await _capabilities_body())
+        return JSONResponse(await _capabilities_v2_body())
 
     @app.get("/health")
     async def health() -> Any:

@@ -48,49 +48,83 @@ def error_envelope(code: str, message: str) -> tuple[dict[str, Any], int]:
 def build_receipt(
     request: Any, result: RunResult, *, caps: Any,
 ) -> dict[str, Any]:
-    """agent_config_applied：实际使用（去重）+ 版本引用 + 摘要字段。"""
+    """agent_config_applied：与平台验证器逐字段对齐的 V3 实际使用回执。
+
+    契约（PostgresConfigApplyReceiptStore._validate_actual_receipt）：
+    runtime_id/schema_version=3/model_version_id/memory_profile_version_id 与发布快照
+    一致；loaded_skill_versions 条目含 body_hash 且 outcome='success'；called_tool_versions
+    条目含版本三元组且 outcome='success'；均去重。
+    """
     snapshot = request.agent_config.snapshot_v3
-    loaded_skills, called_tools = _actual_usage(caps, result)
+    loaded_skills, called_tools, skill_failures = _actual_usage(caps, result)
+    memory_status = (
+        request.memory_context.status if request.memory_context is not None else "unavailable")
     return {
-        "revision_id": str(snapshot.revision_id),
-        "config_digest": request.agent_config.config_digest,
-        "applied_fields": ["model", "system_prompt", "tools", "skills", "memory"],
+        "execution_id": request.execution_id,
         "runtime_id": str(snapshot.runtime_id),
         "schema_version": 3,
+        "revision_id": str(snapshot.revision_id),
+        "config_digest": request.agent_config.config_digest,
         "model_version_id": str(snapshot.model.version_id),
         "memory_profile_version_id": str(snapshot.memory.profile_version_id),
-        "skills_used": loaded_skills,
-        "tools_used": called_tools,
+        "memory_context_status": memory_status,
+        "loaded_skill_versions": loaded_skills,
+        "skill_load_failures": skill_failures,
+        "called_tool_versions": called_tools,
+        "applied_fields": ["system_prompt", "model", "tools", "skills", "memory"],
     }
 
 
-def _actual_usage(caps: Any, result: RunResult) -> tuple[list[dict], list[dict]]:
-    """从结果携带的证据取实际成功使用（去重）；失败/重试留在诊断。"""
-    loaded: dict[str, dict] = {}
-    called: dict[str, dict] = {}
+def _actual_usage(caps: Any, result: RunResult) -> tuple[list[dict], list[dict], list[dict]]:
+    """实际成功使用（去重）：Skill 正文哈希 + 固定工具版本三元组；失败单列。"""
+    import hashlib
+
+    loaded: list[dict] = []
+    called: list[dict] = []
+    failures: list[dict] = []
+    seen_tools: set[tuple] = set()
+    bindings = getattr(caps.tools, "tool_bindings", {}) if caps.tools else {}
+    # 反查：逻辑工具名/远端名 → 固定别名绑定（工作流按逻辑名调用，绑定键是别名）。
+    by_remote = {
+        str(pinned.get("remote_name")): pinned for pinned in bindings.values()
+    }
     for event in (result.recovery.get("_evidence_tool_calls") or []):
         name = str(event.get("name") or "")
+        if name == "load_skill":
+            if event.get("status") != "success":
+                failures.append({"outcome": "failed",
+                                 "error_code": event.get("error_code")})
+            continue
         if event.get("status") != "success":
             continue
-        bindings = getattr(caps.tools, "tool_bindings", {}) if caps.tools else {}
-        pinned = bindings.get(name)
-        if pinned and name not in called:
-            called[name] = {
-                "tool_id": pinned.get("tool_id"),
-                "tool_version_id": pinned.get("tool_version_id"),
-                "server_version_id": pinned.get("server_version_id"),
-            }
+        pinned = (bindings.get(name)
+                  or by_remote.get(str(event.get("remote_name") or ""))
+                  or by_remote.get(name))
+        if not pinned:
+            continue
+        key = (str(pinned.get("tool_id")), str(pinned.get("tool_version_id")),
+               str(pinned.get("server_version_id")))
+        if key in seen_tools:
+            continue
+        seen_tools.add(key)
+        called.append({
+            "tool_id": key[0], "tool_version_id": key[1], "server_version_id": key[2],
+            "remote_name": pinned.get("remote_name"), "outcome": "success",
+        })
     skills = caps.skills
     if skills is not None and getattr(skills, "_loaded", None):
         catalog = {str(item["skill_id"]): item for item in skills.catalog()}
-        for skill_id in skills._loaded:
-            item = catalog.get(skill_id, {"skill_id": skill_id})
-            loaded[skill_id] = {
-                "skill_id": skill_id,
+        for skill_id, body in skills._loaded.items():
+            item = catalog.get(str(skill_id), {"skill_id": skill_id})
+            normalized = str(body).replace("\r\n", "\n").replace("\r", "\n")
+            loaded.append({
+                "skill_id": str(skill_id),
                 "metadata_version_id": item.get("metadata_version_id"),
                 "body_version_id": item.get("body_version_id"),
-            }
-    return list(loaded.values()), list(called.values())
+                "body_hash": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+                "outcome": "success",
+            })
+    return loaded, called, failures
 
 
 def build_response(

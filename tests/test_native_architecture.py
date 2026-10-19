@@ -222,8 +222,8 @@ def test_arch04_workflows_do_not_import_adapters_or_platform(path: Path) -> None
 # --------------------------------------------------------------------------
 # ARCH-05：M1 过渡期包入口仍导出旧引擎
 # --------------------------------------------------------------------------
-def test_arch05_package_entry_keeps_old_engine_imports_for_m1() -> None:
-    """M1 现状固定：旧引擎在 M4 拆除前允许由包入口导出（config/engine/llm/state）。"""
+def test_arch05_package_entry_is_lazy_no_old_engine_at_import() -> None:
+    """M3 契约：`import flowagent` 不载入旧引擎；旧导出经 PEP 562 惰性解析。"""
     path = FLOWAGENT_DIR / "__init__.py"
     tree = _parse(path)
     module_level = {
@@ -232,10 +232,19 @@ def test_arch05_package_entry_keeps_old_engine_imports_for_m1() -> None:
         if isinstance(node, ast.ImportFrom)
         for module in _resolve_from(path, node)
     }
-    expected = {"flowagent.config", "flowagent.engine", "flowagent.llm", "flowagent.state"}
-    assert expected <= module_level, (
-        f"包入口缺少旧引擎模块导出：{sorted(expected - module_level)}（M4 拆除时同步更新本断言）"
+    forbidden = {"flowagent.config", "flowagent.engine", "flowagent.llm", "flowagent.state"}
+    assert not (forbidden & module_level), (
+        f"包入口不得急切导入旧引擎：{sorted(forbidden & module_level)}")
+    # 惰性出口存在且旧名仍在映射表中（M4 拆除时同步更新）。
+    assert any(isinstance(node, ast.FunctionDef) and node.name == "__getattr__"
+               for node in tree.body)
+    mapping = next(
+        (node.value for node in tree.body
+         if isinstance(node, ast.Assign)
+         and any(getattr(t, "id", None) == "_LEGACY_EXPORTS" for t in node.targets)),
+        None,
     )
+    assert mapping is not None and "WorkflowEngine" in ast.dump(mapping)
 
 
 # --------------------------------------------------------------------------

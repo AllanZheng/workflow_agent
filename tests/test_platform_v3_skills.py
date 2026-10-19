@@ -8,7 +8,7 @@
 - V03-c 装载失败映射：非 2xx → skill_load_denied；传输异常 → skill_load_unavailable；
   授权 URL 不以 /model-authorization 结尾 → skill_loader_endpoint_invalid。
 - V03-d 端到端：信封含 skills + 固定 MCP 工具；模型首轮调 load_skill、次轮终文；
-  回执 skills_used 携带 skill 三元组（实际装载去重）；正文进入第二次模型请求
+  回执 loaded_skill_versions 携带 skill 三元组（实际装载去重）；正文进入第二次模型请求
   messages；目录枚举只含绑定 skill_id；未知 skill_id → skill_binding_invalid。
 - V03-e 执行期 MCP：身份头（Bearer 工作负载令牌 + 执行/智能体/修订/运行时/绑定代次）；
   固定别名调用附 X-Agent-Tool-ID/X-Agent-Tool-Version-ID；未固定/不可见工具 →
@@ -395,11 +395,13 @@ def test_v03_d_end_to_end_skill_load_receipt_and_model_context(monkeypatch):
     # 回执：skills_used 携带 skill 三元组（实际装载，目录不算使用）。
     applied = body["metadata"]["agent_config_applied"]
     assert applied["schema_version"] == 3
-    assert applied["skills_used"] == [{
-        "skill_id": str(SKILL_ID),
-        "metadata_version_id": str(METADATA_VERSION_ID),
-        "body_version_id": str(BODY_VERSION_ID),
-    }]
+    # 平台验证器契约：三元组 + 正文哈希 + success 态（目录不算使用）。
+    assert len(applied["loaded_skill_versions"]) == 1
+    entry = applied["loaded_skill_versions"][0]
+    assert (entry["skill_id"], entry["metadata_version_id"], entry["body_version_id"]) == (
+        str(SKILL_ID), str(METADATA_VERSION_ID), str(BODY_VERSION_ID))
+    assert entry["outcome"] == "success"
+    assert isinstance(entry["body_hash"], str) and len(entry["body_hash"]) == 64
     assert body["metadata"]["usage"]["skill_loads"] == 1
 
     # 目录枚举只含绑定 skill_id；正文进入第二次模型请求的 tool 消息。

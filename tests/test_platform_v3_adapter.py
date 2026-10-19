@@ -284,14 +284,14 @@ def test_v04_receipt_records_actual_pinned_tool_usage_with_dedup(monkeypatch):
     receipt = body["metadata"]["agent_config_applied"]
     assert receipt["schema_version"] == 3
     # 两次成功调用 → 一条去重记录，携带钉住的版本引用
-    tools_used = receipt["tools_used"]
+    tools_used = receipt["called_tool_versions"]
     assert len(tools_used) == 1, tools_used
     assert tools_used[0]["tool_id"] == TOOL1_ID
     assert tools_used[0]["tool_version_id"] == TOOL1_VER
     assert tools_used[0]["server_version_id"] == SRV1_VER
     # 已配置未使用的工具二不入回执；Skill 目录不算使用
     assert tools_used[0]["tool_id"] != TOOL2_ID
-    assert receipt["skills_used"] == []
+    assert receipt["loaded_skill_versions"] == []
     # 调用确实发送了别名，且会话头携带工具身份（X-Agent-Tool-ID/版本）
     assert [entry["name"] for entry in tool_calls] == [alias1, alias1]
     identity = [entry["headers"] for entry in cm_calls if "X-Agent-Tool-ID" in entry["headers"]]
@@ -388,15 +388,23 @@ def test_v06b_reset_is_idempotent_ok():
 
 
 def test_v06c_capabilities_contract_on_both_versions():
-    """V06(c)：/capabilities 与 /capabilities/v2 均声明 workflow 框架、V3 快照与 cancel 实现。"""
+    """V06(c)：能力清单与平台 strict 契约逐字段一致（v1 无 snapshot 段；v2 声明 V3）。"""
     client = _client()
-    for path in ("/capabilities", "/capabilities/v2"):
-        response = client.get(path)
-        assert response.status_code == 200, path
-        body = response.json()
-        assert body["framework_id"] == "workflow"
-        assert body["snapshot"]["versions"] == [3]
-        assert body["features"]["cancel"] == "implemented"
+    v1 = client.get("/capabilities")
+    assert v1.status_code == 200
+    body = v1.json()
+    assert body["schema_version"] == 1 and body["framework_id"] == "workflow"
+    assert body["control"]["cancel"] == "implemented"
+    assert body["context"]["memory_context_versions"] == [1]
+    v2 = client.get("/capabilities/v2")
+    assert v2.status_code == 200
+    body2 = v2.json()
+    assert body2["schema_version"] == 2 and body2["snapshot"]["versions"] == [3]
+    assert body2["control"]["cancel"] == "implemented"
+    assert body2["tools"]["execution_scoped_mcp"] is True
+    assert body2["skills"]["session_pinning"] is True
+    assert body2["references"]["uuid"] is True
+    assert body2["models"]["pre_call_authorization"] is True
 
 
 def test_v06d_internal_token_enforced_on_capabilities_and_respond(monkeypatch):

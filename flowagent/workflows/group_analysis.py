@@ -117,7 +117,12 @@ async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, A
     ctx.check_cancel()
     await ctx.budget.reserve_tool()
     ctx.usage.mcp_attempts += 1
-    fetch_result = await ctx.tools.call(FETCH_TOOL, control_to_fetch_arguments(control))
+    fetch_arguments = control_to_fetch_arguments(control)
+    fetch_result = await ctx.tools.call(FETCH_TOOL, fetch_arguments)
+    # 取数计入证据（回执/诊断依据）；远端名解析兼容固定别名。
+    resolver = getattr(ctx.tools, "remote_name", None)
+    remote_name = (resolver(FETCH_TOOL) if callable(resolver) else FETCH_TOOL) or FETCH_TOOL
+    ctx.record_tool(FETCH_TOOL, fetch_arguments, fetch_result, remote_name=remote_name)
     if fetch_result.status in ("error", "unknown"):
         if fetch_result.error_code == ErrorCode.TOOL_ARGUMENT_INVALID.value:
             raise FlowAgentCoreError(
