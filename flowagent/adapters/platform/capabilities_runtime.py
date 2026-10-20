@@ -176,8 +176,15 @@ def _join_text(content: Any) -> str:
     return "\n".join(parts) if parts else "(no content)"
 
 
-async def _sdk_session(endpoint: str, headers: Mapping[str, str], timeout_seconds: float):
-    """真实 SDK 会话（惰性导入；mcp 2.x Client 优先，回退 1.x）。"""
+def _sdk_session(endpoint: str, headers: Mapping[str, str], timeout_seconds: float):
+    """真实 SDK 会话（惰性导入；mcp 2.x Client 优先，回退 1.x）。
+
+    契约：工厂被调用后必须“同步返回”异步上下文管理器，_call_session 直接
+    `async with self._session_factory(...)` 进入。因此本函数绝不能声明为
+    async def——否则调用方拿到协程对象，报 "coroutine ... does not support
+    the asynchronous context manager protocol"，MCP 发现/调用整体失败并
+    触发平台直连接管（真实进程门禁 test_real_process_gates 回归）。
+    """
     from contextlib import asynccontextmanager
 
     try:
