@@ -95,8 +95,8 @@ def build_capabilities(
     if snapshot.tools:
         tools = ExecutionMcpTools(
             endpoint=config.mcp_endpoint or "",
-            workload_token=config.execution_token.get_secret_value()
-            if config.execution_token else "",
+            workload_token=config.tool_access_token.get_secret_value()
+            if config.tool_access_token else "",
             fixed_tools=[tool.model_dump(mode="json") for tool in snapshot.tools],
             execution_id=request.execution_id,
             agent_id=str(snapshot.agent_id),

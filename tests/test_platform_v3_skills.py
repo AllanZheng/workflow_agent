@@ -426,9 +426,9 @@ def test_v03_d_end_to_end_skill_load_receipt_and_model_context(monkeypatch):
         "generation": 4,
     }]
 
-    # 执行期身份头：Bearer 工作负载令牌（信封 execution_token）+ 执行/绑定代次。
+    # 执行期身份头：MCP 使用独立 tool_access_token，模型授权使用 execution_token。
     headers = mcp_calls[0]["headers"]
-    assert headers["Authorization"] == f"Bearer {EXECUTION_TOKEN}"
+    assert headers["Authorization"] == "Bearer tool-access-secret"
     assert headers["X-Execution-ID"] == EXECUTION_ID
     assert headers["X-Binding-Generation"] == "4"
     assert skill_calls and str(skill_calls[0].url).endswith(
@@ -456,7 +456,7 @@ async def test_v03_e_list_sends_identity_headers_and_visible_alias():
 
     # 身份头全集：Bearer 工作负载令牌 + 执行/智能体/修订/运行时/绑定代次。
     headers = calls[0]["headers"]
-    assert headers["Authorization"] == f"Bearer {EXECUTION_TOKEN}"
+    assert headers["Authorization"] == "Bearer tool-access-secret"
     assert headers["X-Execution-ID"] == EXECUTION_ID
     assert headers["X-Agent-ID"] == str(AGENT_ID)
     assert headers["X-Agent-Revision-ID"] == str(REVISION_ID)
@@ -524,7 +524,7 @@ async def test_v03_e_platform_tool_callable_without_pin_headers():
     call_headers = [c["headers"] for c in calls if "headers" in c][-1]
     assert "X-Agent-Tool-ID" not in call_headers  # 平台工具由服务端目录授权
     assert "X-Agent-Tool-Version-ID" not in call_headers
-    assert call_headers["Authorization"] == f"Bearer {EXECUTION_TOKEN}"
+    assert call_headers["Authorization"] == "Bearer tool-access-secret"
 
 
 # 验证“V03-e 服务端 isError → 结构化 error_code 透传”场景下的预期行为。

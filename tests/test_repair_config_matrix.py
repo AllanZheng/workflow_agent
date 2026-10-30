@@ -289,6 +289,7 @@ async def test_cfg05_interleaved_platform_executions_isolate_credentials_tools_a
         envelope['memory_context']['included_ids'] = [f'mem-{label}']
         envelope['agent_config']['model_api_key'] = f'key-{label}'
         envelope['agent_config']['execution_token'] = f'execution-{label}'
+        envelope['agent_config']['tool_access_token'] = f'tool-{label}'
         envelope['agent_config']['mcp_endpoint'] = f'https://{label}.mcp.invalid/mcp'
         envelope['execution_id'] = envelope['trace']['trace_id'] = (
             'f04b6209-30da-4e57-bf93-73c6867cc10' + ('1' if label == 'a' else '2'))
@@ -322,5 +323,5 @@ async def test_cfg05_interleaved_platform_executions_isolate_credentials_tools_a
             assert f'SYS_{other}' not in system[0] and f'MEM_{other}' not in system[0]
         call = next(item for item in tool_calls if item[0] == label)
         assert call[1] == tool_alias(expected_tool) and call[2] == {'query': label}
-        assert call[3]['Authorization'] == f'Bearer execution-{label}'
+        assert call[3]['Authorization'] == f'Bearer tool-{label}'
         assert call[3]['X-Execution-ID'] == envelopes[0 if label == 'a' else 1]['execution_id']
