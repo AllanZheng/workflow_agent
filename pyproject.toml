@@ -39,6 +39,7 @@ addopts = "-q"
 markers = [
   "installation: 构建/安装验收（显式运行：-m installation）",
   "live: 真实模型/MCP/Skill 调用（显式 opt-in）",
+  "process: 启动真实服务或跨进程门禁（优先于 db）",
   "db: 需要隔离测试数据库（AGENT_PLATFORM_*_TEST_DATABASE_URL）",
 ]
 
