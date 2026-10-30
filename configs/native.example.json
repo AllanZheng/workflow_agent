@@ -17,6 +17,11 @@
         "url_env": "WIKI_MCP_URL",
         "headers_env": "WIKI_MCP_HEADERS_JSON",
         "allowed_tools": ["hybrid_search", "get_knowledge", "list_chunks"]
+      }, {
+        "name": "im",
+        "transport": "streamable_http",
+        "url_env": "IM_MCP_URL",
+        "allowed_tools": ["fetch_group_analysis_input"]
       }],
       "workflows": {
         "chat": {"enabled": true},
@@ -25,6 +30,7 @@
         "knowledge_query": {"enabled": true}
       },
       "workflow_bindings": {
+        "group_analysis": {"fetch_tool": "im__fetch_group_analysis_input"},
         "knowledge_query": {
           "search": "wiki__hybrid_search",
           "read": "wiki__get_knowledge",

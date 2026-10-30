@@ -27,6 +27,8 @@ flowagent serve --config config.json --port 8080
 
 HTTP：`POST /runs`（等待结果）、`POST /runs/stream`（SSE：run.started → … → run.finished）、`GET /health`。
 
+独立群分析通过 `workflow_bindings.group_analysis.fetch_tool` 绑定已配置 MCP 服务中的工具别名；示例为 `im__fetch_group_analysis_input`，需配置 `IM_MCP_URL` 和对应访问权限。未使用的 MCP 服务可从示例中移除。独立执行不自动保存跨请求记忆，聊天历史由调用方传入。
+
 ## 平台模式（execution-v1 + V3 快照）
 
 ```bash
@@ -34,6 +36,8 @@ python run_execution.py   # FRAMEWORK_AUTH_ENABLED=0/1；WORKFLOW_PORT 默认 80
 ```
 
 路由：`/execution-v1/respond`、`/execution-v1/respond/stream`、`/execution-v1/reset`、`/execution-v1/cancel`、`/capabilities`、`/capabilities/v2`、`/health`。仅接受 V3 快照；模型每次请求预授权、MCP 执行期固定工具、Skill 正文按固定版本装载。
+
+平台显式下发群分析任务时执行固定工作流；缺少授权工具或预算时返回明确错误，由平台负责托管兜底。取消只能停止本地等待，不能撤销已发出的远程操作。
 
 ## 退出码（CLI run）
 
