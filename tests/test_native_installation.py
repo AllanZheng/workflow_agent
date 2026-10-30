@@ -40,6 +40,26 @@ def _entry_run(installed_wheel: dict, cmd: list[str], cwd: Path) -> subprocess.C
     return _run(cmd, cwd=cwd, env_extra={"PYTHONPATH": installed_wheel["pythonpath"]})
 
 
+def test_python311_compiles_all_package_sources() -> None:
+    """使用真实 3.11 编译器检查全部包模块，不依赖当前测试解释器的语法。"""
+    import os
+    import shutil
+    interpreter = os.environ.get("TEST_PYTHON311") or shutil.which("python3.11")
+    if not interpreter:
+        pytest.skip("未配置 Python 3.11；设置 TEST_PYTHON311 后单独执行")
+    script = (
+        "import pathlib,sys\n"
+        "assert sys.version_info[:2] == (3, 11), 'TEST_PYTHON311 must be Python 3.11'\n"
+        "root=pathlib.Path(sys.argv[1]); paths=sorted(root.rglob('*.py'))\n"
+        "assert paths and (root/'adapters'/'http.py') in paths\n"
+        "for path in paths: compile(path.read_bytes(), str(path), 'exec')\n"
+        "print('PY311-COMPILED', len(paths))\n"
+    )
+    result = _run([interpreter, "-c", script, str(PROJECT_ROOT / "flowagent")], cwd=PROJECT_ROOT)
+    assert result.returncode == 0, result.stderr
+    assert "PY311-COMPILED" in result.stdout
+
+
 @pytest.fixture(scope="module")
 def installed_wheel(tmp_path_factory) -> dict:
     """构建 wheel 并安装到独立 target 目录；返回 {python, wheel, pythonpath}。

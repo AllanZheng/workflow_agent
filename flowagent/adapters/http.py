@@ -82,10 +82,12 @@ def build_http_app(settings: dict[str, Any]) -> Any:
                 import json as _json
 
                 async for event in runner.stream(request):
-                    yield f"data: {_json.dumps({
+                    # 先生成 JSON 再拼接 SSE，兼容 Python 3.10/3.11 的 f-string 语法。
+                    data = _json.dumps({
                         'run_id': event.run_id, 'seq': event.seq, 'kind': event.kind.value,
                         'step': event.step, 'data': event.data,
-                    }, ensure_ascii=False, default=str)}\n\n"
+                    }, ensure_ascii=False, default=str)
+                    yield f"data: {data}\n\n"
 
         return StreamingResponse(event_source(), media_type="text/event-stream")
 
