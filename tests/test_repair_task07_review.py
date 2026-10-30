@@ -59,3 +59,29 @@ def test_task07_group_pinned_headers_and_edge_authorization(monkeypatch, mode):
     assert body['metadata']['agent_config_applied']['called_tool_versions'] == [
         {'tool_id': TOOL1_ID, 'tool_version_id': TOOL1_VER, 'server_version_id': SRV1_VER,
          'remote_name': 'fetch_group_analysis_input', 'outcome': 'success'}]
+
+
+def test_task07_two_servers_same_remote_name_and_visible_aliases_are_rejected(monkeypatch):
+    import copy
+    from tests.test_platform_v3_adapter import TOOL2_ID, _make_mcp_session_factory, _reseal
+
+    envelope = _group_envelope()
+    snapshot = envelope['agent_config']['snapshot']
+    duplicate = copy.deepcopy(snapshot['tools'][0])
+    duplicate['tool_id'] = TOOL2_ID
+    duplicate['tool_version_id'] = '12000000-0000-0000-0000-000000000002'
+    duplicate['server_version_id'] = '13000000-0000-0000-0000-000000000002'
+    assert duplicate['server_version_id'] != snapshot['tools'][0]['server_version_id']
+    snapshot['tools'].append(duplicate)
+    snapshot['config']['tools'].append({'tool_id': duplicate['tool_id'],
+                                        'tool_version_id': duplicate['tool_version_id']})
+    _reseal(envelope)
+    sessions, calls = [], []
+    factory = _make_mcp_session_factory([tool_alias(TOOL1_ID), tool_alias(TOOL2_ID)],
+        structured={'messages': [], 'counts': {}}, cm_calls=sessions, tool_calls=calls)
+    transport, _ = _install_offline_stack(monkeypatch, turns=[], session_factory=factory)
+    response = TestClient(build_platform_service()).post('/execution-v1/respond', json=envelope)
+    assert response.status_code != 200
+    assert response.json()['error']['code'] == 'capability_unavailable'
+    assert calls == [] and transport.requests == []
+    assert 'analysis_result' not in response.json().get('metadata', {})
