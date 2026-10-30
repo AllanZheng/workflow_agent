@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from flowagent.core.input import continuation_clock
 
 from flowagent.core.contracts import (
     Clarification,
@@ -72,18 +73,34 @@ async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, A
         clarify_count = int(continuation.get("clarify_count") or 0)
         supplement = dict(continuation.get("resolved_fields") or {})
         # 本次用户补充逐字段覆盖（补充文本同时供时间/分类解析）。
-        supplement["time"] = user_message
-        supplement["taxonomy"] = user_message
+        previous = continuation.get("_supplements")
+        previous = previous if isinstance(previous, list) else []
+        # 新补充优先，同时保留历史补充中未被本次覆盖的条件。
+        texts = [user_message] + [str(item) for item in reversed(previous)]
+        for key in ("time", "taxonomy"):
+            old_value = supplement.get(key)
+            supplement[key] = texts + ([old_value] if isinstance(old_value, str) else [])
     ctx.original_question = original_question
 
     import datetime as _dt
 
-    reference_time = _dt.datetime.fromisoformat(
-        ctx.reference_time or _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8))).isoformat()
-    )
-    if reference_time.tzinfo is None:
-        reference_time = reference_time.replace(
-            tzinfo=_dt.timezone(_dt.timedelta(hours=8)))
+    control_cfg = cfg
+    if isinstance(continuation, dict) and continuation.get("version") == 1:
+        try:
+            reference_time = continuation_clock(continuation)
+        except ValueError as exc:
+            raise FlowAgentCoreError(ErrorCode.INVALID_INPUT, str(exc)) from exc
+        # 保留原始文本以便跨轮机器标记一致，运算使用转换后的时区对象。
+        ctx.reference_time = continuation["reference_time"]
+        control_cfg = {**cfg, "timezone": continuation["timezone"]}
+    else:
+        reference_time = _dt.datetime.fromisoformat(
+            ctx.reference_time or _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8))).isoformat()
+        )
+        if reference_time.tzinfo is None:
+            reference_time = reference_time.replace(
+                tzinfo=_dt.timezone(_dt.timedelta(hours=8)))
+        ctx.reference_time = reference_time.isoformat()
 
     # ---- 控制参数（代码决定；缺条件 → 澄清/耗尽）----
     try:
@@ -91,7 +108,7 @@ async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, A
             original_question=original_question,
             trusted_target=inputs.get("analysis_target"),
             reference_time=reference_time,
-            config=cfg,
+            config=control_cfg,
             supplement=supplement,
             model_arguments=inputs.get("model_arguments"),
         )
@@ -103,14 +120,16 @@ async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, A
                 f"clarification exhausted; missing={pending.clarification.missing_fields}",
             ) from pending
         return _needs_input_result(ctx, pending.clarification, original_question, cfg,
-                                    clarify_count + 1, control_hint=None)
+                                    clarify_count + 1, control_hint=None,
+                                    previous=continuation, answer=user_message)
     if control.conversation_id is None:
         # 无可信目标且未点名：需要群。
         return _needs_input_result(
             ctx, Clarification(
                 reason="group_unresolved", missing_fields=["目标群"],
                 hints=['请说明要分析的群（如"测试群"或"本群"）']),
-            original_question, cfg, clarify_count + 1, control_hint=control)
+            original_question, cfg, clarify_count + 1, control_hint=control,
+            previous=continuation, answer=user_message)
 
     # ---- 取数（有效控制参数由代码生成；被服务拒绝属契约错误）----
     ctx.step = "group.fetch"
@@ -243,14 +262,19 @@ async def run_group_analysis_via_tool(
 def _needs_input_result(
     ctx: Any, clarification: Clarification, original_question: str,
     cfg: dict[str, Any], next_count: int, *, control_hint: GroupControl | None,
+    previous: Any = None, answer: str = "",
 ) -> RunResult:
     continuation = build_continuation(
         workflow="group_analysis", original_request=original_question,
         reference_time=ctx.reference_time or "",
-        timezone=cfg.get("timezone", "Asia/Shanghai"),
-        resolved_fields={},
+        timezone=(previous.get("timezone") if isinstance(previous, dict)
+                  else cfg.get("timezone", "Asia/Shanghai")),
+        resolved_fields=dict(previous.get("resolved_fields") or {}) if isinstance(previous, dict) else {},
         clarify_count=next_count,
     )
+    if isinstance(previous, dict):
+        prior = previous.get("_supplements")
+        continuation["_supplements"] = (list(prior) if isinstance(prior, list) else []) + [answer]
     clarification.continuation = continuation
     clarification.confirmed_fields = {}
     return RunResult(
@@ -317,9 +341,8 @@ async def _llm_json(ctx: Any, system: str, prompt: str) -> dict[str, Any]:
         if isinstance(exc, BudgetExceeded):
             raise FlowAgentCoreError(ErrorCode.MODEL_BUDGET_EXCEEDED, str(exc)) from exc
         raise
-    ctx.usage.model_requests += 1
     completed = None
-    async for event in ctx.model.stream(
+    async for event in ctx.stream_model(
         [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         [], {},
     ):
@@ -376,7 +399,13 @@ async def _classify_batch(
                     mapping[str(ref)] = str(category)
             if len(mapping) == len(expected):
                 return mapping
-        except (ValueError, TypeError, FlowAgentCoreError):
+        except FlowAgentCoreError as exc:
+            # 授权、取消、预算等终止条件不能伪装为分类格式失败并继续请求。
+            if exc.code in (ErrorCode.AUTHORIZATION_DENIED, ErrorCode.CANCELLED_BY_USER,
+                            ErrorCode.DEADLINE_EXCEEDED, ErrorCode.MODEL_BUDGET_EXCEEDED,
+                            ErrorCode.CONTEXT_LIMIT_EXCEEDED):
+                raise
+        except (ValueError, TypeError):
             pass
         # 修复提示（同证据）：给出精确约束后重试一次。
         feedback = (
@@ -422,19 +451,20 @@ async def _build_report(
         f"消息（引用只能使用其中的 message_ref）：{digest}\n"
         "末尾单独一行输出引用列表：引用: [m1, m2]"
     )
-    ctx.check_cancel()
-    try:
-        await ctx.budget.reserve_model()
-    except Exception as exc:
-        from flowagent.core.context import BudgetExceeded
-        if isinstance(exc, BudgetExceeded):
-            return _program_partial_report(control, stats, [], []), [], False
-        raise
-    ctx.usage.model_requests += 1
     report, refs = "", []
     for attempt in range(2):
+        ctx.check_cancel()
+        try:
+            await ctx.budget.reserve_model()
+        except Exception as exc:
+            from flowagent.core.context import BudgetExceeded
+            if isinstance(exc, BudgetExceeded):
+                if attempt:
+                    return report, refs, True
+                return _program_partial_report(control, stats, [], []), [], attempt > 0
+            raise
         completed = None
-        async for event in ctx.model.stream(
+        async for event in ctx.stream_model(
             [{"role": "system", "content": _REPORT_SYSTEM},
              {"role": "user", "content": prompt if attempt == 0 else prompt + _REF_FEEDBACK(valid_refs)}],
             [], {},

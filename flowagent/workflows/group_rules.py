@@ -128,8 +128,7 @@ def resolve_window(
     - supplement（续接补充）里的显式表达优先于原始问题。
     """
     diag: dict[str, Any] = {}
-    for source_name, text in (("supplement", str((supplement or {}).get("time") or "")),
-                              ("question", original_question)):
+    for source_name, text in _ordered_sources((supplement or {}).get("time"), original_question):
         if not text:
             continue
         window = _parse_explicit_window(text, reference_time)
@@ -254,8 +253,7 @@ def resolve_taxonomy(
     "按时间顺序总结""按人汇总""分成两部分讲"不是类别列表，不触发分类澄清。
     """
     diag: dict[str, Any] = {}
-    for source_name, text in (("supplement", str((supplement or {}).get("taxonomy") or "")),
-                              ("question", original_question)):
+    for source_name, text in _ordered_sources((supplement or {}).get("taxonomy"), original_question):
         if not text:
             continue
         found = _taxonomy_from_text(text)
@@ -274,6 +272,12 @@ def resolve_taxonomy(
     diag.update({"taxonomy_source": "default"})
     # 默认口径按配置原样（不加未归类）；仅用户自定义口径追加未归类。
     return tuple(default), diag
+
+
+def _ordered_sources(supplement: Any, original: str):
+    """逐条解析补充，避免不同日期匹配顺序盖过真实补充先后。"""
+    items = supplement if isinstance(supplement, list) else [supplement]
+    return [("supplement", str(item or "")) for item in items] + [("question", original)]
 
 
 def _taxonomy_from_text(text: str):

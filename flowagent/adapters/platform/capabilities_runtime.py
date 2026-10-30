@@ -420,5 +420,10 @@ class AuthorizedModel(Model):
             model_version_id=self._model_version_id,
             generation=self._generation,
         )
-        async for event in self._inner.stream(messages, tools, limits):
-            yield event
+        from flowagent.core.stream import close_async_resource
+        stream = self._inner.stream(messages, tools, limits)
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await close_async_resource(stream)

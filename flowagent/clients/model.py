@@ -8,10 +8,12 @@
 """
 from __future__ import annotations
 
+import inspect
 import json
 from typing import Any, AsyncIterator, Mapping
 
 from flowagent.core.contracts import ErrorCode, FlowAgentCoreError, Model, ModelEvent
+from flowagent.core.stream import close_async_resource
 
 
 def _map_openai_error(exc: BaseException) -> FlowAgentCoreError:
@@ -34,6 +36,8 @@ def _map_openai_error(exc: BaseException) -> FlowAgentCoreError:
 class OpenAICompatibleModel(Model):
     """OpenAI 兼容端点的流式客户端。"""
 
+    records_actual_requests = True
+
     def __init__(
         self,
         *,
@@ -44,6 +48,7 @@ class OpenAICompatibleModel(Model):
         timeout_seconds: float = 60.0,
         extra_body: dict[str, Any] | None = None,
         client: Any | None = None,  # 测试注入 AsyncOpenAI 替身
+        on_request: Any | None = None,
     ) -> None:
         self.base_url = base_url
         self.model_name = model_name
@@ -52,6 +57,7 @@ class OpenAICompatibleModel(Model):
         self._api_key = api_key  # 请求级凭据可经 set_api_key 换发；不落日志
         self._extra_body = dict(extra_body or {})
         self._client = client
+        self._on_request = on_request
 
     def _ensure_client(self) -> Any:
         if self._client is None:
@@ -82,8 +88,9 @@ class OpenAICompatibleModel(Model):
         }
         if tools:
             request["tools"] = tools
-        if "max_tokens" in limits:
-            request["max_tokens"] = limits["max_tokens"]
+        for name in ("max_tokens", "top_p", "presence_penalty", "frequency_penalty", "stop"):
+            if name in limits:
+                request[name] = limits[name]
         if self._extra_body:
             request["extra_body"] = self._extra_body
 
@@ -91,11 +98,24 @@ class OpenAICompatibleModel(Model):
         tool_calls: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
         usage: dict[str, int] | None = None
+        stream = None
+        iterator = None
 
         try:
-            created = self._ensure_client().chat.completions.create(**request)
-            stream = await created if hasattr(created, "__await__") else created
-            async for chunk in stream:
+            create = self._ensure_client().chat.completions.create
+            if not callable(create):
+                raise TypeError("model SDK chat.completions.create is not callable")
+            created = create(**request)
+            if not inspect.isawaitable(created) and not callable(getattr(created, "__aiter__", None)):
+                raise TypeError("model SDK create did not return an awaitable or async stream")
+            # 已交给 SDK 且参数绑定成功才记账；异步网络尚未被证实成功。
+            from flowagent.core.model_context import record_native_request
+            record_native_request()
+            if self._on_request is not None:
+                self._on_request(request)
+            stream = await created if inspect.isawaitable(created) else created
+            iterator = stream.__aiter__()
+            async for chunk in iterator:
                 usage = getattr(chunk, "usage", None) and _extract_usage(chunk.usage) or usage
                 if not getattr(chunk, "choices", None):
                     continue
@@ -125,6 +145,10 @@ class OpenAICompatibleModel(Model):
             raise
         except Exception as exc:  # noqa: BLE001 - 统一映射为稳定错误码
             raise _map_openai_error(exc) from None
+        finally:
+            await close_async_resource(iterator)
+            if stream is not iterator:
+                await close_async_resource(stream)
 
         yield ModelEvent(
             kind="completed",

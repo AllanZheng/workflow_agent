@@ -43,18 +43,22 @@ def build_http_app(settings: dict[str, Any]) -> Any:
         inputs = payload.get("inputs")
         if inputs is not None and not isinstance(inputs, dict):
             raise HTTPException(status_code=422, detail="invalid envelope: inputs must be object")
-        history = payload.get("history") or []
+        history = payload.get("history", [])
         if not isinstance(history, list):
             raise HTTPException(status_code=422, detail="invalid envelope: history must be list")
         continuation = payload.get("continuation")
         if continuation is not None and not isinstance(continuation, dict):
             raise HTTPException(status_code=422, detail="invalid envelope: continuation must be object")
+        optional = {}
+        if "history" in payload:
+            optional["history"] = [dict(item) for item in history if isinstance(item, dict)]
+        if "continuation" in payload:
+            optional["continuation"] = continuation
         return RunInput(
             workflow=payload["workflow"],
             inputs=dict(inputs or {}),
-            history=[dict(item) for item in history if isinstance(item, dict)],
             correlation_id=payload.get("correlation_id"),
-            continuation=continuation,
+            **optional,
         )
 
     @app.post("/runs")

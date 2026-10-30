@@ -28,6 +28,8 @@ from flowagent.adapters.platform.protocol import ExecutionRequest, MemoryContext
 from flowagent.clients.model import OpenAICompatibleModel
 from flowagent.core.context import Budget, RunContext
 from flowagent.core.contracts import RunInput, strip_clarification_marker
+from flowagent.core.model_context import ContextualModel, ModelRequestContext
+from flowagent.core.input import continuation_clock
 
 # 进程级：当前请求的能力束（由 respond/stream 处理器设置）。
 _CURRENT: contextvars.ContextVar["RequestCapabilities | None"] = contextvars.ContextVar(
@@ -46,6 +48,7 @@ class RequestCapabilities:
     tools: Any = None
     skills: Any = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    model_context: ModelRequestContext | None = None
 
 
 def build_capabilities(
@@ -59,6 +62,13 @@ def build_capabilities(
     assert snapshot is not None  # 协议层已保证
     config = request.agent_config
 
+    memory = request.memory_context
+    model_context = ModelRequestContext(
+        system_prompt=snapshot.system_prompt,
+        memory_text=(memory.rendered_text if memory and snapshot.memory.read and memory.status == "ok" else ""),
+        memory_ids=(list(memory.included_ids) if memory and snapshot.memory.read and memory.status == "ok" else []),
+        parameters=snapshot.model.parameters.model_dump(exclude_none=True),
+    )
     inner_model = OpenAICompatibleModel(
         base_url=snapshot.model.base_url,
         api_key=config.model_api_key.get_secret_value() if config.model_api_key else "EMPTY",
@@ -66,10 +76,10 @@ def build_capabilities(
         temperature=(snapshot.model.parameters.temperature
                      if snapshot.model.parameters.temperature is not None else 0.0),
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-        client=model_transport,
+        client=model_transport, on_request=model_context.record_request,
     )
     model = AuthorizedModel(
-        inner_model, DemoModelAuthorizer(
+        ContextualModel(inner_model, model_context), DemoModelAuthorizer(
             config.model_authorization_url or "",
             config.execution_token.get_secret_value() if config.execution_token else "",
             str(snapshot.runtime_id),
@@ -108,7 +118,8 @@ def build_capabilities(
         )
         skills.bind_execution(request.execution_id, request.binding_generation)
 
-    return RequestCapabilities(request=request, model=model, tools=tools, skills=skills)
+    return RequestCapabilities(request=request, model=model, tools=tools, skills=skills,
+                               model_context=model_context)
 
 
 class _BoundSkillLoader:
@@ -135,6 +146,10 @@ def context_factory(platform_policy: dict[str, Any] | None = None) -> Callable[[
             model=caps.model, tools=caps.tools, skills=caps.skills,
             budget=budget_from_request(request, platform_policy),
         )
+        if caps.model_context is not None:
+            caps.model_context.context_bytes = ctx.budget.context_bytes
+            caps.model_context.usage = ctx.usage
+            ctx.model_request_evidence = caps.model_context
         ctx.reference_time = _reference_time(request)
         ctx.original_question = str(
             _metadata(request).get("original_user_message") or request.message)
@@ -254,47 +269,48 @@ def rebuild_continuation_from_history(
     """
     from flowagent.core.contracts import parse_clarification_marker
 
-    history = [item for item in request.history
-               if isinstance(item, dict) and item.get("role") in ("user", "assistant")]
+    history = request.history
     if not history:
         return None, {}
-    tail: list[tuple[str, dict[str, Any]]] = []
-    for item in reversed(history):
-        content = str(item.get("content") or "")
-        if item.get("role") == "assistant" and parse_clarification_marker(content):
-            tail.append(("assistant", item))
-            continue
-        if item.get("role") == "user" and tail and tail[-1][0] == "assistant":
-            tail.append(("user", item))
-            continue
-        if item.get("role") == "user" and tail and tail[-1][0] == "user":
-            # 连续 user：取最后一条为补充，其余并入原请求上下文。
-            continue
-        break
-    if not tail or tail[-1][0] != "user":
+    if not isinstance(history[-1], dict) or history[-1].get("role") != "assistant":
         return None, {"history_incomplete": True}
-    tail.reverse()
-    clarify_count = sum(1 for role, _ in tail if role == "assistant")
-    tail.reverse()
-    # original_request：链条之前的最后一条 user（无则用当前 message）。
-    chain_start_index = len(history) - len(tail)
-    original = ""
-    for item in reversed(history[:chain_start_index]):
-        if item.get("role") == "user":
-            original = str(item.get("content") or "")
-            break
-    marker = parse_clarification_marker(str(tail[0][1].get("content") or "")) or {}
-    if marker.get("clarify_count") != clarify_count:
-        return None, {"template_invalid": True, "expected": clarify_count,
-                      "marker": marker.get("clarify_count")}
-    supplements = [str(item.get("content") or "") for role, item in tail if role == "user"]
+    marker = parse_clarification_marker(str(history[-1].get("content") or ""))
+    count = marker.get("clarify_count") if marker else None
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1 or count > 2:
+        return None, {"template_invalid": True}
+    try:
+        continuation_clock(marker)
+    except ValueError:
+        return None, {"template_invalid": True, "invalid_continuation_clock": True}
+    # 从末尾按计数倒查完整链；找到首个提问后恢复正序补充。
+    index = len(history) - 1
+    supplements = []
+    for expected in range(count, 0, -1):
+        if index < 1 or not isinstance(history[index], dict):
+            return None, {"history_incomplete": True}
+        current = history[index]
+        current_marker = parse_clarification_marker(str(current.get("content") or ""))
+        if (current.get("role") != "assistant" or not current_marker
+                or current_marker.get("clarify_count") != expected
+                or any(current_marker.get(key) != marker.get(key)
+                       for key in ("workflow", "reference_time", "timezone"))):
+            return None, {"template_invalid": True}
+        previous = history[index - 1]
+        if not isinstance(previous, dict) or previous.get("role") != "user" or not str(previous.get("content") or "").strip():
+            return None, {"history_incomplete": True}
+        if expected > 1:
+            supplements.append(str(previous["content"]))
+        else:
+            original = str(previous["content"])
+        index -= 2
+    supplements.reverse()
     return {
         "version": 1,
-        "workflow": marker.get("workflow") or "group_analysis",
-        "original_request": original or request.message,
-        "reference_time": marker.get("reference_time") or _reference_time(request),
-        "timezone": marker.get("timezone") or "Asia/Shanghai",
+        "workflow": marker["workflow"],
+        "original_request": original,
+        "reference_time": marker["reference_time"],
+        "timezone": marker["timezone"],
         "resolved_fields": {},
-        "clarify_count": clarify_count,
+        "clarify_count": count,
         "_supplements": supplements,
-    }, {"rebuilt_pairs": len(tail) // 2}
+    }, {"rebuilt_pairs": count}

@@ -70,10 +70,9 @@ def build_knowledge_workflow(*, bindings: dict[str, str] | None = None) -> Workf
             await ctx.budget.reserve_model()
         except BudgetExceeded as exc:
             raise FlowAgentCoreError(ErrorCode.MODEL_BUDGET_EXCEEDED, str(exc)) from exc
-        ctx.usage.model_requests += 1
         digest = json.dumps(rows, ensure_ascii=False, default=str)[:8000]
         completed = None
-        async for event in ctx.model.stream(
+        async for event in ctx.stream_model(
             [{"role": "system", "content": KNOWLEDGE_SYSTEM_PROMPT},
              {"role": "user", "content": f"问题：{question}\n\n检索结果：{digest}\n\n"
               "请回答并在末尾单独一行输出引用: [{\"knowledge_id\": \"...\", \"title\": \"...\"}]"}],

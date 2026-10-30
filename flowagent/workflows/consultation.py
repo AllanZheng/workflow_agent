@@ -193,10 +193,9 @@ async def _validate_with_repair(ctx: Any, stage: str, draft_text: str):
         await ctx.budget.reserve_model()
     except BudgetExceeded as exc:
         raise FlowAgentCoreError(ErrorCode.MODEL_BUDGET_EXCEEDED, str(exc)) from exc
-    ctx.usage.model_requests += 1
     repaired = None
     feedback = _validate_with_repair.__doc__ or ""
-    async for event in ctx.model.stream(
+    async for event in ctx.stream_model(
         [{"role": "system", "content": _stage_system(stage, "off") + " 你上一版输出未通过校验，请修正。"},
          {"role": "user", "content": f"上一版输出：\n{draft_text[:4000]}\n\n请重新输出符合 schema 的单个 JSON 对象。"}],
         [], {},

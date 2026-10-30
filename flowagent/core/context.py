@@ -143,6 +143,8 @@ class RunContext:
         self.skills = skills
         self.budget = budget
         self.usage = Usage()
+        # 平台模型在 SDK 发起时记账；其他模型在原生流入口记账。
+        self.model_request_evidence: Any = None
         self.evidence: dict[str, Any] = {}
         self.diagnostics: dict[str, Any] = {}  # 有界诊断（参数来源等；不含凭据/群材料）
         self._emit_sink = emit
@@ -155,6 +157,38 @@ class RunContext:
         # 代码提供的原问题与参考时钟（不来自模型参数）。
         self.original_question: str = ""
         self.reference_time: str = ""
+
+    async def stream_model(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+                           limits: Any):
+        from flowagent.core.model_context import native_request_usage
+        from flowagent.core.stream import close_async_resource
+
+        native_observed = self.model_request_evidence is None and getattr(
+            self.model, "records_actual_requests", False)
+        if self.model_request_evidence is None and not native_observed:
+            self.usage.model_requests += 1
+        iterator = self.model.stream(messages, tools, limits).__aiter__()
+        try:
+            while True:
+                # 每次迭代在同一 task 设置和重置；截止时间包装可能切换 task。
+                token = native_request_usage.set(self.usage) if native_observed else None
+                try:
+                    event = await iterator.__anext__()
+                except StopAsyncIteration:
+                    return
+                finally:
+                    if token is not None:
+                        native_request_usage.reset(token)
+                if event.kind == "completed" and event.usage:
+                    # 输入和输出分别累加，单侧缺失时保留未知状态。
+                    for key, source in (("tokens_in", "input_tokens"), ("tokens_out", "output_tokens")):
+                        value = event.usage.get(source)
+                        if value is not None:
+                            setattr(self.usage, key, (getattr(self.usage, key) or 0) + value)
+                yield event
+        finally:
+            # 外层提前关闭或取消时同步关闭底层流，不能留给 GC。
+            await close_async_resource(iterator)
 
     async def aclose(self) -> None:
         """执行资源回收：MCP 会话等按注册逆序关闭；关闭不抛出。"""
@@ -254,6 +288,7 @@ async def aiter_with_deadline(iterator: Any, deadline_ms: float, *, code: str = 
     import asyncio
 
     from flowagent.core.contracts import ErrorCode, FlowAgentCoreError
+    from flowagent.core.stream import close_async_resource
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(0.001, deadline_ms / 1000)
@@ -261,15 +296,18 @@ async def aiter_with_deadline(iterator: Any, deadline_ms: float, *, code: str = 
     async def _next(item: Any):
         return await item.__anext__()
 
-    while True:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            raise FlowAgentCoreError(code, f"stream deadline exceeded ({deadline_ms:.0f}ms)")
-        try:
-            value = await asyncio.wait_for(_next(iterator), remaining)
-        except asyncio.TimeoutError as exc:
-            raise FlowAgentCoreError(
-                code, f"stream deadline exceeded ({deadline_ms:.0f}ms)") from exc
-        except StopAsyncIteration:
-            return
-        yield value
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise FlowAgentCoreError(code, f"stream deadline exceeded ({deadline_ms:.0f}ms)")
+            try:
+                value = await asyncio.wait_for(_next(iterator), remaining)
+            except asyncio.TimeoutError as exc:
+                raise FlowAgentCoreError(
+                    code, f"stream deadline exceeded ({deadline_ms:.0f}ms)") from exc
+            except StopAsyncIteration:
+                return
+            yield value
+    finally:
+        await close_async_resource(iterator)

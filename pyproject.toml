@@ -21,6 +21,7 @@ dependencies = [
     "openai>=1.40",
     "mcp>=2.2,<3",
     "httpx2>=2.13",
+    "tzdata>=2024.1",
 ]
 
 [project.scripts]

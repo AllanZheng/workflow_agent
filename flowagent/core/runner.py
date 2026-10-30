@@ -28,6 +28,7 @@ from flowagent.core.contracts import (
     WorkflowSpec,
 )
 from flowagent.core.context import RunContext
+from flowagent.core.input import normalize_input
 
 logger = logging.getLogger("flowagent.runner")
 
@@ -140,6 +141,7 @@ class Runner:
     async def execute(
         self, request: RunInput, *, emit: Callable[[RunEvent], None] | None = None
     ) -> RunResult:
+        request = normalize_input(request)
         ctx = self.context_factory()
         ctx._emit_sink = emit or (lambda event: None)
         # 关联调用方请求号（仅诊断，不进入模型上下文）。
@@ -369,7 +371,6 @@ class Runner:
         if window <= 0:
             raise FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "no time for fallback")
         await ctx.budget.reserve_model(fallback=True)
-        ctx.usage.model_requests += 1
         recent = "\n".join(
             f"{item.get('role')}: {item.get('content', '')}" for item in request.history[-4:]
         )
@@ -396,7 +397,7 @@ class Runner:
             from flowagent.core.context import aiter_with_deadline
 
             stream = aiter_with_deadline(
-                ctx.model.stream(messages, [], {"timeout_ms": window}), window)
+                ctx.stream_model(messages, [], {"timeout_ms": window}), window)
             async for event in stream:
                 if event.kind == "completed":
                     completed = event

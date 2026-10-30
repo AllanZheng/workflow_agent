@@ -65,12 +65,16 @@ def _cmd_run_native(args) -> int:
         payload = json.loads(open(args.input_file, encoding="utf-8").read())
     else:
         payload = json.loads(args.input or "{}")
+    optional = {}
+    if "history" in payload:
+        optional["history"] = [dict(item) for item in payload["history"]]
+    if "continuation" in payload:
+        optional["continuation"] = payload["continuation"]
     result = asyncio.run(runner.run(RunInput(
         workflow=str(payload.get("workflow", "chat")),
         inputs=dict(payload.get("inputs") or {}),
-        history=[dict(item) for item in payload.get("history") or []],
         correlation_id=payload.get("correlation_id"),
-        continuation=payload.get("continuation"),
+        **optional,
     )))
     print(json.dumps(result.to_public_dict(), ensure_ascii=False, indent=2, default=str))
     return _EXIT_CODES.get(result.status.value, 1)

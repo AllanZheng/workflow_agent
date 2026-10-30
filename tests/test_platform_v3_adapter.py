@@ -486,7 +486,7 @@ def test_v07d_explicit_continuation_wins_over_history_rebuild():
     """V07(d)：显式 continuation 载荷优先于 history 重建。"""
     envelope = _envelope()
     marker = render_clarification_marker({
-        "version": 1, "workflow": "group_analysis", "reference_time": "t0",
+        "version": 1, "workflow": "group_analysis", "reference_time": "2026-10-20T10:00:00+08:00",
         "timezone": "Asia/Shanghai", "clarify_count": 1,
     })
     envelope["history"] = [
@@ -511,7 +511,7 @@ def test_v07d_history_rebuild_pairs_from_clarification_marker():
     envelope = _envelope()
     envelope["message"] = "群名是A群"  # 最新补充走 message，history 终止于澄清 assistant
     marker = render_clarification_marker({
-        "version": 1, "workflow": "group_analysis", "reference_time": "t0",
+        "version": 1, "workflow": "group_analysis", "reference_time": "2026-10-20T10:00:00+08:00",
         "timezone": "Asia/Shanghai", "clarify_count": 1,
     })
     envelope["history"] = [
@@ -533,7 +533,7 @@ def test_v07d_marker_count_mismatch_falls_back_to_new_request():
     """V07(d)：标记计数与链内澄清数不符 → 按新请求处理并记 template_invalid 诊断。"""
     envelope = _envelope()
     marker = render_clarification_marker({
-        "version": 1, "workflow": "group_analysis", "reference_time": "t0",
+        "version": 1, "workflow": "group_analysis", "reference_time": "2026-10-20T10:00:00+08:00",
         "timezone": "Asia/Shanghai", "clarify_count": 3,  # 计数虚高：链内只有 2 个澄清
     })
     envelope["history"] = [
@@ -556,7 +556,7 @@ def test_v07d_new_request_flag_clears_explicit_and_rebuilt_continuation():
     """V07(d)：new_request=true 时清空显式与重建两类 continuation。"""
     envelope = _envelope()
     marker = render_clarification_marker({
-        "version": 1, "workflow": "group_analysis", "reference_time": "t0",
+        "version": 1, "workflow": "group_analysis", "reference_time": "2026-10-20T10:00:00+08:00",
         "timezone": "Asia/Shanghai", "clarify_count": 1,
     })
     envelope["history"] = [

@@ -59,6 +59,16 @@ def build_receipt(
     loaded_skills, called_tools, skill_failures = _actual_usage(caps, result)
     memory_status = (
         request.memory_context.status if request.memory_context is not None else "unavailable")
+    model_context = getattr(caps, "model_context", None)
+    model_count = model_context.request_count if model_context else 0
+    memory_injected = bool(model_context and model_context.memory_injected)
+    applied_fields = ["tools", "skills"]
+    if model_count:
+        applied_fields.append("model")
+        if model_context.system_prompt.strip():
+            applied_fields.append("system_prompt")
+        if memory_injected:
+            applied_fields.append("memory")
     return {
         "execution_id": request.execution_id,
         "runtime_id": str(snapshot.runtime_id),
@@ -71,7 +81,11 @@ def build_receipt(
         "loaded_skill_versions": loaded_skills,
         "skill_load_failures": skill_failures,
         "called_tool_versions": called_tools,
-        "applied_fields": ["system_prompt", "model", "tools", "skills", "memory"],
+        "applied_fields": applied_fields,
+        "model_request_count": model_count,
+        "applied_model_parameters": dict(model_context.applied_parameters) if model_count else {},
+        "memory_injected": memory_injected,
+        "memory_included_ids": list(model_context.memory_ids) if memory_injected else [],
     }
 
 
@@ -150,7 +164,7 @@ def build_response(
     body: dict[str, Any] = {
         "execution_id": request.execution_id,
         "reply": result.reply,
-        "used_context_refs": list((result.output or {}).get("memory_included_ids") or []),
+        "used_context_refs": metadata["agent_config_applied"]["memory_included_ids"],
         "metadata": metadata,
     }
     if "analysis_result" in output:

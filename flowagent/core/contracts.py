@@ -67,7 +67,10 @@ class FlowAgentCoreError(RuntimeError):
 # ---------------------------------------------------------------- 数据对象
 
 
-@dataclass
+_UNSET = object()
+
+
+@dataclass(init=False)
 class RunInput:
     """一次执行的输入；无凭据、无平台快照（平台字段在适配层消化）。"""
 
@@ -76,6 +79,17 @@ class RunInput:
     history: list[dict[str, str]] = field(default_factory=list)
     correlation_id: str | None = None
     continuation: dict[str, Any] | None = None
+
+    def __init__(self, workflow: str, inputs: dict[str, Any] | None = None,
+                 history: Any = _UNSET, correlation_id: str | None = None,
+                 continuation: Any = _UNSET) -> None:
+        self.workflow = workflow
+        self.inputs = {} if inputs is None else inputs
+        self._history_supplied = history is not _UNSET
+        self.history = [] if history is _UNSET else history
+        self.correlation_id = correlation_id
+        self._continuation_supplied = continuation is not _UNSET
+        self.continuation = None if continuation is _UNSET else continuation
 
 
 @dataclass
@@ -327,7 +341,7 @@ def parse_clarification_marker(text: str) -> dict[str, Any] | None:
         payload = json.loads(match.group(1))
     except json.JSONDecodeError:
         return None
-    if payload.get("version") != 1:
+    if not isinstance(payload, dict) or payload.get("version") != 1:
         return None
     return payload
 

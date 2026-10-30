@@ -162,7 +162,6 @@ async def run_agent(
         except BudgetExceeded as exc:
             raise FlowAgentCoreError(
                 ErrorCode.MODEL_BUDGET_EXCEEDED, str(exc)) from exc
-        ctx.usage.model_requests += 1
         _ensure_context_budget(ctx, messages, schemas)
         completed = None
         retried = False
@@ -192,7 +191,6 @@ async def run_agent(
                 except BudgetExceeded as exc2:
                     raise FlowAgentCoreError(
                         ErrorCode.MODEL_BUDGET_EXCEEDED, str(exc2)) from exc2
-                ctx.usage.model_requests += 1
                 continue
             break
 
@@ -358,7 +356,7 @@ async def _consume_stream(
 
     completed = None
     stream = aiter_with_deadline(
-        ctx.model.stream(messages, schemas, limits or {}),
+        ctx.stream_model(messages, schemas, limits or {}),
         max(1_000.0, ctx.budget.remaining_main_ms()),
     )
     async for event in stream:
@@ -369,13 +367,6 @@ async def _consume_stream(
             completed = event
     if completed is None:
         raise FlowAgentCoreError(ErrorCode.MODEL_INVALID_RESPONSE, "stream ended without completed")
-    # usage 记账（不可得为 None）。
-    usage = completed.usage or {}
-    if ctx.usage.tokens_in is None and usage.get("input_tokens") is None:
-        ctx.usage.tokens_in = ctx.usage.tokens_in  # 保持 None
-    else:
-        ctx.usage.tokens_in = (ctx.usage.tokens_in or 0) + (usage.get("input_tokens") or 0)
-        ctx.usage.tokens_out = (ctx.usage.tokens_out or 0) + (usage.get("output_tokens") or 0)
     return completed
 
 
