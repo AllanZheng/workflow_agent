@@ -84,7 +84,11 @@ def build_runner(
         max_active_runs=int(profile.get("max_active_runs", 8)),
     )
     workflows = {"chat": build_chat_workflow()}
-    group_cfg = profile.get("group_analysis") or {}
+    group_cfg = dict(profile.get("group_analysis") or {})
+    group_binding = (profile.get("workflow_bindings") or {}).get("group_analysis") or {}
+    if group_binding.get("fetch_tool"):
+        # 独立 profile 使用自己的规范工具别名；平台快照不读取本地配置。
+        group_cfg["fetch_tool"] = group_binding["fetch_tool"]
     workflows["group_analysis"] = build_group_analysis_workflow(config=group_cfg)
     workflows["consultation_stage"] = build_consultation_workflow()
     bindings = (profile.get("workflow_bindings") or {}).get("knowledge_query")

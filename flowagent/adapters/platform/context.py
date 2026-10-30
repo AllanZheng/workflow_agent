@@ -173,21 +173,23 @@ def budget_from_request(
 ) -> Budget:
     """请求总时限 - 兜底预留 = Sample 主阶段时间；额度取 platform_policy 与默认较小值。"""
     policy = dict(platform_policy or {}).get("limits") or {}
-    deadline_ms = float(request.deadline_ms or 90_000)
+    deadline_ms = float(90_000 if request.deadline_ms is None else request.deadline_ms)
     main_ms = max(1_000.0, deadline_ms - DEFAULT_MAIN_RESERVE_MS)
     model_total = min(int(policy.get("model_calls", 24)), 24)
     mcp_total = min(int(policy.get("tool_calls", 32)), 32)
+    if request.execution_limits is not None:
+        # 平台额度已包含它自己的兜底名额，内核主阶段仍保留一次。
+        model_total = min(model_total, request.execution_limits.model_total)
+        mcp_total = min(mcp_total, request.execution_limits.tool_total)
     autonomous = (policy.get("autonomous") or {})
     budget = Budget(
         model_total=model_total, mcp_total=mcp_total,
         deadline_ms=deadline_ms, main_deadline_ms=main_ms,
         fallback_timeout_ms=DEFAULT_MAIN_RESERVE_MS,
         context_bytes=int(policy.get("context_bytes", 131_072)),
+        autonomous_model_total=int(autonomous.get("model_calls", 12)),
+        autonomous_tool_total=int(autonomous.get("tool_calls", 16)),
     )
-    budget._platform_autonomous = {
-        "model_calls": min(int(autonomous.get("model_calls", 12)), 12),
-        "tool_calls": min(int(autonomous.get("tool_calls", 16)), 16),
-    }
     return budget
 
 
@@ -195,7 +197,8 @@ def budget_from_request(
 
 def to_run_input(request: ExecutionRequest) -> RunInput:
     """V3 信封 → 内核 RunInput；含 continuation/history 重建与元数据白名单。"""
-    workflow = "consultation_stage" if request.function_task is not None else "chat"
+    workflow = ("group_analysis" if request.function_task and request.function_task.function_key == "group_analysis"
+                else "consultation_stage" if request.function_task else "chat")
     metadata = _metadata(request)
     rebuilt, rebuild_diag = rebuild_continuation_from_history(request)
     continuation = None

@@ -48,8 +48,7 @@ def build_group_analysis_workflow(*, config: dict[str, Any] | None = None) -> Wo
     cfg = dict(config or {})
 
     async def preflight(inputs: dict[str, Any], ctx: Any) -> str | None:
-        if ctx.tools is None:
-            return "dependency_missing"
+        # 固定群任务不可在依赖缺失时改走自主规划；run 中统一失败。
         return None
 
     async def run(inputs: dict[str, Any], ctx: Any) -> RunResult:
@@ -59,6 +58,7 @@ def build_group_analysis_workflow(*, config: dict[str, Any] | None = None) -> Wo
 
 
 async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, Any]) -> RunResult:
+    fetch_tool = await _resolve_fetch_tool(ctx, cfg)
     # ---- 原问题与续接（§4.1/§4.3）----
     continuation = inputs.get("continuation")
     user_message = str(inputs.get("message") or "")
@@ -134,14 +134,18 @@ async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, A
     # ---- 取数（有效控制参数由代码生成；被服务拒绝属契约错误）----
     ctx.step = "group.fetch"
     ctx.check_cancel()
-    await ctx.budget.reserve_tool()
+    from flowagent.core.context import BudgetExceeded
+    try:
+        await ctx.budget.reserve_tool()
+    except BudgetExceeded as exc:
+        raise FlowAgentCoreError(ErrorCode.TOOL_BUDGET_EXCEEDED, str(exc)) from exc
     ctx.usage.mcp_attempts += 1
     fetch_arguments = control_to_fetch_arguments(control)
-    fetch_result = await ctx.tools.call(FETCH_TOOL, fetch_arguments)
+    fetch_result = await ctx.tools.call(fetch_tool, fetch_arguments)
     # 取数计入证据（回执/诊断依据）；远端名解析兼容固定别名。
     resolver = getattr(ctx.tools, "remote_name", None)
-    remote_name = (resolver(FETCH_TOOL) if callable(resolver) else FETCH_TOOL) or FETCH_TOOL
-    ctx.record_tool(FETCH_TOOL, fetch_arguments, fetch_result, remote_name=remote_name)
+    remote_name = (resolver(fetch_tool) if callable(resolver) else fetch_tool) or fetch_tool
+    ctx.record_tool(fetch_tool, fetch_arguments, fetch_result, remote_name=remote_name)
     if fetch_result.status in ("error", "unknown"):
         if fetch_result.error_code == ErrorCode.TOOL_ARGUMENT_INVALID.value:
             raise FlowAgentCoreError(
@@ -213,10 +217,14 @@ async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, A
         report, report_refs = _program_partial_report(control, stats, failed_refs, unprocessed), []
 
     status = Status.PARTIAL if (partial_reasons or upstream_partial) else Status.COMPLETED
+    window = raw.get("window") if isinstance(raw.get("window"), dict) else {}
     analysis = {
         "conversation_id": control.conversation_id,
         "requested_window": {"start": control.start, "end_exclusive": control.end_exclusive},
-        "effective_window": raw.get("window") or {},
+        "effective_window": window,
+        # 平台持久化读取实际取数窗口的顶层字段，不以请求窗口冒充上游结果。
+        "window_start": window.get("start"),
+        "window_end_exclusive": window.get("end_exclusive"),
         "requested_taxonomy": {"text": original_question},
         "effective_taxonomy": {"categories": list(control.taxonomy)},
         "statistics": stats,
@@ -230,7 +238,7 @@ async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, A
         },
         "report_refs": report_refs,
         "report_repair_attempted": report_repaired,
-        "status": status.value,
+        "status": "complete" if status is Status.COMPLETED else "partial",
         "partial_reasons": sorted(set(partial_reasons)),
     }
     reply = report if status is Status.COMPLETED else _with_coverage_note(report, analysis)
@@ -255,6 +263,27 @@ async def run_group_analysis_via_tool(
         "model_arguments": arguments,
     }
     return await _run_group_analysis(inputs, ctx, cfg)
+
+
+async def _resolve_fetch_tool(ctx: Any, cfg: dict[str, Any]) -> str:
+    """平台从冻结 remote_name 定位唯一别名，本地则使用 profile 绑定。"""
+    if ctx.tools is None:
+        raise FlowAgentCoreError(ErrorCode.CAPABILITY_UNAVAILABLE, "group fetch tool is unavailable")
+    bindings = getattr(ctx.tools, "tool_bindings", None)
+    if bindings is not None:
+        matches = [alias for alias, item in bindings.items() if item.get("remote_name") == FETCH_TOOL]
+        if len(matches) != 1:
+            raise FlowAgentCoreError(ErrorCode.CAPABILITY_UNAVAILABLE,
+                                     "group fetch tool requires one frozen binding")
+        alias = matches[0]
+    else:
+        alias = str(cfg.get("fetch_tool") or FETCH_TOOL)
+    # 别名必须在当前 MCP 目录中可见；快照绑定本身不是调用许可。
+    from flowagent.core.context import await_capability
+    available = await await_capability(ctx, ctx.tools.list())
+    if not any(item.name == alias for item in available):
+        raise FlowAgentCoreError(ErrorCode.CAPABILITY_UNAVAILABLE, f"group fetch tool not visible: {alias}")
+    return alias
 
 
 # ---------------------------------------------------------------- 澄清终态
@@ -286,14 +315,19 @@ def _needs_input_result(
 
 
 def _completed_no_messages(ctx: Any, control: GroupControl, raw: dict[str, Any]) -> RunResult:
+    window = raw.get("window") if isinstance(raw.get("window"), dict) else {}
     analysis = {
         "conversation_id": control.conversation_id,
-        "effective_window": raw.get("window") or {},
+        "requested_window": {"start": control.start, "end_exclusive": control.end_exclusive},
+        "effective_window": window,
+        "window_start": window.get("start"),
+        "window_end_exclusive": window.get("end_exclusive"),
+        "requested_taxonomy": {"text": ctx.original_question},
         "effective_taxonomy": {"categories": list(control.taxonomy)},
         "statistics": {"total_messages": 0, "categories": []},
         "coverage": {"received_unique": 0, "classified": 0, "failed": 0,
                      "unprocessed": 0, "upstream": raw.get("counts") or {}},
-        "status": "completed", "partial_reasons": [],
+        "status": "complete", "partial_reasons": [],
     }
     span = f"{control.start} ~ {control.end_exclusive}"
     return RunResult(

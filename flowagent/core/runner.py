@@ -162,6 +162,9 @@ class Runner:
                 self._active.pop(ctx.run_id, None)
             await ctx.reclaim_children()
             await ctx.aclose()
+            if result is not None and ctx.diagnostics.get("capability_cleanup_pending"):
+                result.recovery["capability_cleanup_pending"] = True
+                result.recovery["capability_outcome"] = "unknown"
         assert result is not None
         result.usage = ctx.usage
         # 唯一 run.finished：经 ctx.emit 保证 seq 连续递增，携带完整 RunResult。
@@ -172,6 +175,11 @@ class Runner:
     # ---- 内部：一次执行 ----
     async def _execute_once(self, ctx: RunContext, request: RunInput) -> RunResult:
         ctx.emit(EventKind.RUN_STARTED, {"workflow": request.workflow})
+        try:
+            # 不让耗尽的请求进入 preflight、MCP 发现或模型调用。
+            ctx.check_cancel()
+        except FlowAgentCoreError as exc:
+            return await self._handle_primary_error(ctx, request, exc, "not_started")
         route_reason = "registered"
         spec = self.workflows.get(request.workflow)
         if spec is None:
@@ -182,6 +190,13 @@ class Runner:
             preflight_reason = await self._preflight(spec, request, ctx)
             if preflight_reason is not None:
                 route_reason = preflight_reason  # dependency_missing
+        if (request.workflow == "group_analysis" and request.inputs.get("function_task")
+                and route_reason != "registered"):
+            # 平台显式固定任务禁用或缺依赖时，不能伪装为自主任务成功。
+            ctx.budget.switch_path("fixed")
+            return await self._handle_primary_error(
+                ctx, request, FlowAgentCoreError(ErrorCode.CAPABILITY_UNAVAILABLE,
+                                                  f"group workflow unavailable: {route_reason}"), route_reason)
         path = "fixed" if route_reason == "registered" else "autonomous"
         ctx.budget.switch_path(path)
         ctx.diagnostics["route_reason"] = route_reason
@@ -370,7 +385,12 @@ class Runner:
         window = ctx.budget.fallback_window_ms()
         if window <= 0:
             raise FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "no time for fallback")
-        await ctx.budget.reserve_model(fallback=True)
+        from flowagent.core.context import BudgetExceeded
+        try:
+            await ctx.budget.reserve_model(fallback=True)
+        except BudgetExceeded as exc:
+            # 自主额度耗尽时仍保持稳定错误码，不能让预算异常逃出 Runner。
+            raise FlowAgentCoreError(ErrorCode.MODEL_BUDGET_EXCEEDED, str(exc)) from exc
         recent = "\n".join(
             f"{item.get('role')}: {item.get('content', '')}" for item in request.history[-4:]
         )

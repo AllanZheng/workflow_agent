@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time as _time
 import uuid
 from typing import Any, Callable
@@ -26,6 +27,43 @@ from flowagent.core.contracts import (
 
 ContextBytes = 131_072  # 每次模型请求的 UTF-8 字节预算（非性能承诺）
 EvidenceValueLimit = 4_000  # 单条工具结果入证据的字符上限（防超长材料膨胀）
+_CLEANUP_GRACE_SECONDS = 0.05
+_DETACHED_TASKS: set[asyncio.Future] = set()
+logger = logging.getLogger("flowagent.context")
+
+
+def _observe_detached(task: asyncio.Future) -> None:
+    """延迟消费后台任务异常，避免清理超时后出现无主异常。"""
+    _DETACHED_TASKS.discard(task)
+    if not task.cancelled():
+        try:
+            error = task.exception()
+            if error is not None:
+                logger.warning("detached capability failed: %s", type(error).__name__)
+        except (asyncio.CancelledError, Exception):
+            logger.exception("detached capability completion could not be inspected")
+
+
+async def _cancel_and_reap(tasks: set[asyncio.Future]) -> set[asyncio.Future]:
+    """只等待有限清理时间；拒绝取消的任务继续跟踪至最终完成。"""
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    try:
+        if tasks:
+            await asyncio.wait(tasks, timeout=_CLEANUP_GRACE_SECONDS)
+    finally:
+        pending = {task for task in tasks if not task.done()}
+        if pending:
+            logger.warning("capability cleanup timed out; remote outcome is unknown")
+        for task in pending:
+            if task not in _DETACHED_TASKS:
+                _DETACHED_TASKS.add(task)
+                task.add_done_callback(_observe_detached)
+        for task in tasks - pending:
+            if not task.cancelled():
+                task.exception()  # 消费异常，不改变外层已有异常。
+    return pending
 
 
 def _bounded(value: Any) -> Any:
@@ -51,6 +89,8 @@ class Budget:
         main_deadline_ms: float,
         fallback_timeout_ms: float,
         context_bytes: int = ContextBytes,
+        autonomous_model_total: int = 12,
+        autonomous_tool_total: int = 16,
         clock: Callable[[], float] = _time.monotonic,
     ) -> None:
         self._lock = asyncio.Lock()
@@ -58,6 +98,9 @@ class Budget:
         self._started = clock()
         self.model_total = model_total
         self.mcp_total = mcp_total
+        # 自主路径独立上限含一次兜底，仍不得突破全局与默认硬上限。
+        self.autonomous_model_total = max(0, min(autonomous_model_total, 12))
+        self.autonomous_tool_total = max(0, min(autonomous_tool_total, 16))
         self.deadline_ms = deadline_ms
         self.main_deadline_ms = main_deadline_ms
         self.fallback_timeout_ms = fallback_timeout_ms
@@ -91,17 +134,23 @@ class Budget:
     def _model_cap(self) -> int:
         """当前路径的主阶段模型上限（兜底 1 次已在总额度中预留）。"""
         if self._path == "autonomous":
-            return min(self.model_total - 1, 11)
-        return min(self.model_total - 1, 23)
+            return max(0, min(self.model_total - 1, self.autonomous_model_total - 1))
+        return max(0, min(self.model_total - 1, 23))
 
     def _mcp_cap(self) -> int:
-        return 16 if self._path == "autonomous" else 32
+        # 平台硬额度始终约束路径上限，包括显式的零额度。
+        return min(self.mcp_total, self.autonomous_tool_total if self._path == "autonomous" else 32)
+
+    def _fallback_model_cap(self) -> int:
+        if self._path == "autonomous":
+            return min(self.model_total, self.autonomous_model_total)
+        return self.model_total
 
     # ---- 原子预占 ----
     async def reserve_model(self, *, fallback: bool = False) -> None:
-        """预占一次模型调用；主阶段受路径上限约束，兜底受总额度约束。"""
+        """预占模型调用；主阶段与兜底均受对应路径和全局额度约束。"""
         async with self._lock:
-            cap = self.model_total if fallback else self._model_cap()
+            cap = self._fallback_model_cap() if fallback else self._model_cap()
             if self.model_spent >= cap:
                 raise BudgetExceeded(
                     f"model budget: spent={self.model_spent} cap={cap} fallback={fallback}")
@@ -114,7 +163,7 @@ class Budget:
             self.mcp_spent += 1
 
     def model_available(self, *, fallback: bool = False) -> bool:
-        cap = self.model_total if fallback else self._model_cap()
+        cap = self._fallback_model_cap() if fallback else self._model_cap()
         return self.model_spent < cap
 
     def fits_context(self, payload: str | bytes) -> bool:
@@ -243,14 +292,10 @@ class RunContext:
 
     async def reclaim_children(self) -> None:
         """回收所有子任务；已被远端接收的写操作不得声称撤销。"""
-        for task in list(self._children):
-            if not task.done():
-                task.cancel()
-        for task in list(self._children):
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - 回收不抛出
-                pass
+        pending = await _cancel_and_reap(set(self._children))
+        if pending:
+            self.diagnostics["capability_cleanup_pending"] = True
+            self._children.difference_update(pending)
 
     # ---- 证据 ----
     def record_tool(
@@ -264,6 +309,45 @@ class RunContext:
             # 结果值入证据（知识状态/引用过滤依据；有界截断防超长材料）。
             "result_value": _bounded(result.value),
         })
+
+
+async def await_capability(ctx: RunContext, awaitable: Any) -> Any:
+    """在主阶段剩余时间内竞争能力结果与取消，失败时回收本地任务。"""
+    from flowagent.core.contracts import ErrorCode, FlowAgentCoreError
+
+    try:
+        ctx.check_cancel()
+        remaining = ctx.budget.remaining_main_ms()
+        if remaining <= 0:
+            raise FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "main deadline exceeded before capability call")
+    except BaseException:
+        # 协程尚未调度，关闭它以免零时限产生无主协程或实际请求。
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()
+        raise
+    operation = ctx.track(asyncio.ensure_future(awaitable))
+    cancelled = asyncio.create_task(ctx.wait_cancelled())
+    try:
+        done, _ = await asyncio.wait(
+            {operation, cancelled}, timeout=remaining / 1000.0,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        # 同时完成时取消优先，避免发布已接收取消的结果。
+        if ctx.cancelled:
+            ctx.check_cancel()
+        if operation not in done:
+            raise FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "capability deadline exceeded")
+        ctx.check_cancel()
+        if ctx.budget.remaining_main_ms() <= 0:
+            raise FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "main capability deadline exceeded")
+        return operation.result()
+    finally:
+        pending = await _cancel_and_reap({operation, cancelled})
+        if pending:
+            # 本地等待已结束不等于远端操作已取消，结果须标记未知。
+            ctx.diagnostics["capability_cleanup_pending"] = True
+            ctx._children.difference_update(pending)
 
 
 def default_budget(clock: Callable[[], float] = _time.monotonic) -> Budget:

@@ -70,6 +70,9 @@ def _capabilities_v2(adapter_version: str) -> dict[str, Any]:
         "skills": {"catalog_versions": [1], "load_versions": [1], "session_pinning": True},
         "references": {"uuid": True},
         "models": {"pre_call_authorization": True},
+        "tasks": {"group_analysis_versions": [1]},
+        "execution_limits_versions": [1],
+        "application_receipt_versions": [1],
         "applied_config_fields": _APPLIED_FIELDS,
         "editable_fields": _EDITABLE_FIELDS,
     }
@@ -134,7 +137,7 @@ def build_platform_app(
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=422, detail=f"invalid envelope: {str(exc)[:400]}") from exc
-        if model.function_task is not None:
+        if model.function_task is not None and model.function_task.function_key != "group_analysis":
             raise HTTPException(
                 status_code=422, detail="function_task_requires_respond")
 

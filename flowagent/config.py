@@ -91,6 +91,8 @@ def build_budget(profile: dict) -> Budget:
         main_deadline_ms=float(limits["main_deadline_ms"]),
         fallback_timeout_ms=float(limits["fallback_timeout_ms"]),
         context_bytes=int(limits["context_bytes"]),
+        autonomous_model_total=int(autonomous["model_calls"]),
+        autonomous_tool_total=int(autonomous["tool_calls"]),
     )
 
 

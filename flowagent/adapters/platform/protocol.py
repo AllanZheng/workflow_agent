@@ -219,6 +219,20 @@ class FunctionTask(StrictModel):
         return mode if mode in ("off", "optional", "required") else "off"
 
 
+class GroupAnalysisTask(StrictModel):
+    """平台显式固定群分析任务，不允许混用其他阶段或输出类型。"""
+    function_key: Literal["group_analysis"]
+    stage: Literal["analyze"]
+    output_schema: Literal["group_analysis_result_v1"]
+    inputs: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionLimits(StrictModel):
+    """平台下发的本次硬额度；布尔、字符串和负数均不得隐式转换。"""
+    model_total: int = Field(strict=True, ge=0)
+    tool_total: int = Field(strict=True, ge=0)
+
+
 # ---------------------------------------------------------------- 信封
 
 
@@ -301,13 +315,22 @@ class ExecutionRequest(StrictModel):
     scene: dict[str, Any]
     request_metadata: dict[str, Any] = Field(default_factory=dict)
     memory_context: MemoryContextV1 | None = None
-    function_task: FunctionTask | None = None
+    function_task: Annotated[FunctionTask | GroupAnalysisTask, Field(discriminator="function_key")] | None = None
+    execution_limits: ExecutionLimits | None = None
     model: str | None = None
     model_revision: int | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
     runtime_injection: None = None
     unified_runtime_injection: None = None
     agent_config: ManagedAgentConfig
+
+    @field_validator("execution_limits", mode="before")
+    @classmethod
+    def _limits_if_present_are_object(cls, value: Any) -> Any:
+        # 省略表示兼容旧调用；显式 null 不是可验证的预算对象。
+        if value is None:
+            raise ValueError("execution_limits must be an object when provided")
+        return value
 
     @model_validator(mode="after")
     def _validate_v3_execution_scope(self):

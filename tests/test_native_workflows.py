@@ -177,7 +177,7 @@ async def test_g01_trusted_target_beats_model_arguments():
 
 async def test_g01_terminal_tool_entry_uses_original_question():
     """G01 终端工具入口：控制参数取 ctx.original_question 与 chat 暂存的 _inputs。"""
-    tools = FakeTools(results={FETCH_TOOL: _payload(_messages(("m1", "设备报警需要处理")))})
+    tools = FakeTools(catalog=[{"name": FETCH_TOOL}], results={FETCH_TOOL: _payload(_messages(("m1", "设备报警需要处理")))})
     model = FakeModel([_cls({"m1": "风险类"}), _rep(["m1"])])
     ctx = _ctx(model, tools)
     ctx.original_question = Q_3D
@@ -191,7 +191,7 @@ async def test_g01_terminal_tool_entry_uses_original_question():
 
 async def test_g01_original_user_message_metadata_wins():
     """G01 request_metadata.original_user_message 才是真实用户输入（控制参数来源）。"""
-    tools = FakeTools(results={FETCH_TOOL: _payload(_messages(("m1", "会议室空调报修")))})
+    tools = FakeTools(catalog=[{"name": FETCH_TOOL}], results={FETCH_TOOL: _payload(_messages(("m1", "会议室空调报修")))})
     model = FakeModel([_cls({"m1": "问题"}), _rep(["m1"])])
     ctx = _ctx(model, tools)
     inputs = _group_inputs("帮我看看", target=TARGET,
@@ -516,7 +516,7 @@ async def test_g07_clarify_count_two_and_still_missing_raises_exhausted():
 
 async def test_g07_cross_midnight_yesterday_uses_original_reference():
     """G07 参考时钟固定 23:50，“昨天”按原参考解出前一整天（不漂移到今天）。"""
-    tools = FakeTools(results={FETCH_TOOL: _payload(_messages(("m1", "昨夜值班记录")))})
+    tools = FakeTools(catalog=[{"name": FETCH_TOOL}], results={FETCH_TOOL: _payload(_messages(("m1", "昨夜值班记录")))})
     model = FakeModel([_cls({"m1": "风险类"}), _rep(["m1"])])
     ctx = _ctx(model, tools, reference_time="2026-10-19T23:50:00+08:00")
     result = await build_group_analysis_workflow().run(

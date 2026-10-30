@@ -151,10 +151,9 @@ async def test_b02_autonomous_switch_keeps_spend_and_global_cap():
     with pytest.raises(BudgetExceeded):
         await budget.reserve_model()
 
-    # 兜底仍可继续，但全局总额度 24 是硬上限
-    for _ in range(13):
-        await budget.reserve_model(fallback=True)
-    assert budget.model_spent == 24
+    # 自主路径 12 次总额度含最后一次兜底，不可扩至固定路径额度。
+    await budget.reserve_model(fallback=True)
+    assert budget.model_spent == 12
     with pytest.raises(BudgetExceeded):
         await budget.reserve_model(fallback=True)
 
