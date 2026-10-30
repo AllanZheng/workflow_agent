@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
@@ -106,7 +107,7 @@ def build_platform_app(
         return caps, result
 
     def _respond_body(caps: Any, result: Any) -> JSONResponse:
-        if result.status is Status.FAILED and result.error is not None:
+        if result.status in (Status.FAILED, Status.CANCELLED) and result.error is not None:
             envelope, status_code = error_envelope(
                 result.error.code.value, str(result.error))
             envelope["execution_id"] = caps.request.execution_id
@@ -163,7 +164,7 @@ def build_platform_app(
                         break
                 if result_obj is None:
                     result_obj = _BareResult()
-                if result_obj.status is Status.FAILED and result_obj.error is not None:
+                if result_obj.status in (Status.FAILED, Status.CANCELLED) and result_obj.error is not None:
                     envelope, _ = error_envelope(result_obj.error.code.value, str(result_obj.error))
                     seq += 1
                     yield _sse({"seq": seq, "kind": "error",
@@ -175,12 +176,14 @@ def build_platform_app(
                                     if k != "_evidence_tool_calls"}}})
                 else:
                     seq += 1
+                    response_body = build_response(caps.request, result_obj, caps=caps)
+                    # StreamEvent 只提供 metadata，引用需显式搬入该字段。
+                    response_body["metadata"]["used_context_refs"] = response_body["used_context_refs"]
                     yield _sse({"seq": seq, "kind": "done",
                                 "trace_id": model.execution_id,
                                 "content": result_obj.reply,
                                 "framework": "workflow",
-                                "metadata": build_response(
-                                    caps.request, result_obj, caps=caps)["metadata"]})
+                                "metadata": response_body["metadata"]})
             finally:
                 platform_context.reset_capabilities(token)
 
@@ -200,6 +203,10 @@ def build_platform_app(
         if not _bearer_ok(request):
             raise HTTPException(status_code=401, detail="unauthorized")
         execution_id = str((payload or {}).get("execution_id") or "")
+        try:
+            execution_id = str(uuid.UUID(execution_id))
+        except ValueError:
+            return JSONResponse({"run_id": execution_id, "cancelled": False, "reason": "not_found_or_finished"})
         outcome = runner.cancel(execution_id)
         return JSONResponse(outcome)
 

@@ -27,6 +27,7 @@ _ERROR_MAP: dict[str, tuple[str, int]] = {
     "MCP_TOOL_ERROR": ("mcp_tool_error", 502),
     "CAPABILITY_UNAVAILABLE": ("capability_unavailable", 502),
     "CONTEXT_LIMIT_EXCEEDED": ("context_limit_exceeded", 422),
+    "MAIN_DEADLINE_EXCEEDED": ("main_deadline_exceeded", 502),
     "DEADLINE_EXCEEDED": ("deadline_exceeded", 504),
     "AUTHORIZATION_DENIED": ("authorization_denied", 403),
     "CANCELLED_BY_USER": ("cancelled", 499),

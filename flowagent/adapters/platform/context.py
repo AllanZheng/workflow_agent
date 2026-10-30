@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import contextvars
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any, Callable
@@ -145,6 +146,7 @@ def context_factory(platform_policy: dict[str, Any] | None = None) -> Callable[[
         ctx = RunContext(
             model=caps.model, tools=caps.tools, skills=caps.skills,
             budget=budget_from_request(request, platform_policy),
+            run_id=str(uuid.UUID(request.execution_id)),
         )
         if caps.model_context is not None:
             caps.model_context.context_bytes = ctx.budget.context_bytes

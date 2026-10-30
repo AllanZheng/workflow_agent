@@ -135,18 +135,17 @@ def build_consultation_workflow(*, system_base: str = "你是风险会商助手�
 
 async def _code_driven_search(ctx: Any, tools: "_WikiOnlyTools", materials: str) -> str:
     """required 模式的代码发起检索：取第一个知识工具，成功结果进证据与提示。"""
-    from flowagent.core.context import BudgetExceeded
+    from flowagent.core.context import BudgetExceeded, await_capability, await_remote_tool
 
-    specs = await tools.list()
+    specs = await await_capability(ctx, tools.list())
     if not specs:
         return ""
     ctx.check_cancel()
     try:
         await ctx.budget.reserve_tool()
-    except BudgetExceeded:
-        return ""
-    ctx.usage.mcp_attempts += 1
-    result = await tools.call(specs[0].name, {"query": materials[:120]})
+    except BudgetExceeded as exc:
+        raise FlowAgentCoreError(ErrorCode.TOOL_BUDGET_EXCEEDED, str(exc)) from exc
+    result = await await_remote_tool(ctx, lambda: tools.call(specs[0].name, {"query": materials[:120]}))
     ctx.record_tool(specs[0].name, {"query": materials[:120]}, result,
                     remote_name=tools._remote_name(specs[0]))
     if result.status != "success" or not isinstance(result.value, dict):

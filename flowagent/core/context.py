@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time as _time
 import uuid
@@ -75,6 +76,10 @@ def _bounded(value: Any) -> Any:
 
 class BudgetExceeded(PermissionError):
     """额度或时限不足（原子预占失败时抛出；不与业务错误混用）。"""
+
+    def __init__(self, message: str, *, resource: str) -> None:
+        self.resource = resource
+        super().__init__(message)
 
 
 class Budget:
@@ -153,13 +158,15 @@ class Budget:
             cap = self._fallback_model_cap() if fallback else self._model_cap()
             if self.model_spent >= cap:
                 raise BudgetExceeded(
-                    f"model budget: spent={self.model_spent} cap={cap} fallback={fallback}")
+                    f"model budget: spent={self.model_spent} cap={cap} path={self._path} fallback={fallback}",
+                    resource="model")
             self.model_spent += 1
 
     async def reserve_tool(self) -> None:
         async with self._lock:
             if self.mcp_spent >= self._mcp_cap():
-                raise BudgetExceeded(f"mcp budget: spent={self.mcp_spent} cap={self._mcp_cap()}")
+                raise BudgetExceeded(f"mcp budget: spent={self.mcp_spent} cap={self._mcp_cap()} path={self._path}",
+                                     resource="tool")
             self.mcp_spent += 1
 
     def model_available(self, *, fallback: bool = False) -> bool:
@@ -197,6 +204,7 @@ class RunContext:
         self.evidence: dict[str, Any] = {}
         self.diagnostics: dict[str, Any] = {}  # 有界诊断（参数来源等；不含凭据/群材料）
         self._emit_sink = emit
+        self._async_emit_sink: Any = None
         self._seq = 0
         self._cancelled = asyncio.Event()
         self._children: set[asyncio.Task] = set()
@@ -208,21 +216,32 @@ class RunContext:
         self.reference_time: str = ""
 
     async def stream_model(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
-                           limits: Any):
+                           limits: Any, *, fallback: bool = False):
         from flowagent.core.model_context import native_request_usage
-        from flowagent.core.stream import close_async_resource
+        import sys
 
         native_observed = self.model_request_evidence is None and getattr(
             self.model, "records_actual_requests", False)
-        if self.model_request_evidence is None and not native_observed:
-            self.usage.model_requests += 1
+        count_generic = self.model_request_evidence is None and not native_observed
+        started = False
         iterator = self.model.stream(messages, tools, limits).__aiter__()
+        async def next_event() -> Any:
+            nonlocal started
+            self.check_cancel()
+            remaining = self.budget.fallback_window_ms() if fallback else self.budget.remaining_main_ms()
+            if remaining <= 0:
+                raise _deadline_error(self, fallback=fallback)
+            if count_generic and not started:
+                # 非 SDK 模型在实际进入流时计数，预占不等于请求已发起。
+                self.usage.model_requests += 1
+                started = True
+            return await iterator.__anext__()
         try:
             while True:
                 # 每次迭代在同一 task 设置和重置；截止时间包装可能切换 task。
                 token = native_request_usage.set(self.usage) if native_observed else None
                 try:
-                    event = await iterator.__anext__()
+                    event = await await_capability(self, next_event(), fallback=fallback)
                 except StopAsyncIteration:
                     return
                 finally:
@@ -236,19 +255,33 @@ class RunContext:
                             setattr(self.usage, key, (getattr(self.usage, key) or 0) + value)
                 yield event
         finally:
-            # 外层提前关闭或取消时同步关闭底层流，不能留给 GC。
-            await close_async_resource(iterator)
+            # 外层提前关闭时仍尝试回收，但不可让顽固的 aclose 绕过截止时间。
+            await _close_model_iterator(self, iterator, sys.exc_info()[1], fallback=fallback)
 
     async def aclose(self) -> None:
-        """执行资源回收：MCP 会话等按注册逆序关闭；关闭不抛出。"""
-        for closer in reversed(self.closers):
+        """按逆序关闭执行资源，清理等待受剩余时限与有限宽限约束。"""
+        closers, self.closers = self.closers, []
+        for closer in reversed(closers):
             try:
                 result = closer()
-                if hasattr(result, "__await__"):
-                    await result
-            except Exception:  # noqa: BLE001 - 回收不抛出
-                pass
-        self.closers.clear()
+                if not inspect.isawaitable(result):
+                    continue
+                task = self.track(asyncio.ensure_future(result))
+                cancel_waiter = asyncio.create_task(self.wait_cancelled())
+                try:
+                    timeout = min(1.0, max(0.0, self.budget.remaining_total_ms() / 1000.0))
+                    # 接收取消后不再等待完整清理窗口。
+                    await asyncio.wait({task, cancel_waiter}, timeout=timeout,
+                                       return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    pending = await _cancel_and_reap({task, cancel_waiter})
+                    if pending:
+                        self.diagnostics["capability_cleanup_pending"] = True
+                        self._children.difference_update(pending)
+                if task.done() and not task.cancelled() and task.exception() is not None:
+                    logger.warning("resource cleanup failed: %s", type(task.exception()).__name__)
+            except Exception:  # noqa: BLE001 - 清理失败不覆盖运行结果。
+                logger.exception("resource cleanup failed")
 
     # ---- 事件 ----
     def emit(self, kind: EventKind, data: dict[str, Any] | None = None) -> RunEvent:
@@ -262,6 +295,20 @@ class RunContext:
                 self._emit_sink(event)
             except Exception:  # noqa: BLE001 - 订阅方异常不得中断执行
                 pass
+        return event
+
+    async def emit_async(self, kind: EventKind, data: dict[str, Any] | None = None) -> RunEvent:
+        """最终正文和终态等待消费者接收，不能因进度队列满而丢失。"""
+        if self._async_emit_sink is None:
+            event = self.emit(kind, data)
+            if kind is EventKind.RUN_FINISHED:
+                self._terminal_committed = True
+            return event
+        event = RunEvent(run_id=self.run_id, seq=self._seq, kind=kind, step=self.step, data=dict(data or {}))
+        await self._async_emit_sink(event)
+        self._seq += 1
+        if kind is EventKind.RUN_FINISHED:
+            self._terminal_committed = True
         return event
 
     # ---- 取消 ----
@@ -311,15 +358,56 @@ class RunContext:
         })
 
 
-async def await_capability(ctx: RunContext, awaitable: Any) -> Any:
+async def _close_model_iterator(ctx: RunContext, iterator: Any, active_error: BaseException | None,
+                                *, fallback: bool) -> None:
+    from flowagent.core.stream import close_async_resource
+    task = asyncio.create_task(close_async_resource(iterator))
+    cancel_waiter = asyncio.create_task(ctx.wait_cancelled())
+    interrupted = False
+    try:
+        remaining = ctx.budget.fallback_window_ms() if fallback else ctx.budget.remaining_main_ms()
+        done, _ = await asyncio.wait({task, cancel_waiter}, timeout=min(1.0, max(0.0, remaining / 1000)),
+                                     return_when=asyncio.FIRST_COMPLETED)
+        interrupted = task not in done or ctx.cancelled
+    except asyncio.CancelledError:
+        # 正常关闭时新收到的取消须传播；已有真实错误不能被清理异常覆盖。
+        if active_error is None or isinstance(active_error, GeneratorExit):
+            raise
+        logger.warning("model cleanup cancelled while handling an existing error")
+    finally:
+        pending = await _cancel_and_reap({task, cancel_waiter})
+        if pending:
+            ctx.diagnostics["capability_cleanup_pending"] = True
+            ctx.diagnostics["capability_outcome"] = "unknown"
+    if interrupted and (active_error is None or isinstance(active_error, GeneratorExit)):
+        ctx.check_cancel()
+        remaining = ctx.budget.fallback_window_ms() if fallback else ctx.budget.remaining_main_ms()
+        if remaining <= 0:
+            raise _deadline_error(ctx, fallback=fallback)
+
+
+def _deadline_error(ctx: RunContext, *, fallback: bool = False):
+    """主阶段耗时不能占用保留给唯一兜底所有者的总时限。"""
+    from flowagent.core.contracts import ErrorCode, FlowAgentCoreError
+    ctx.check_cancel()
+    # 限时器精度可能比时钟读数提前不到一毫秒，等长窗口仍属于总时限。
+    if not fallback and ctx.budget.main_deadline_ms >= ctx.budget.deadline_ms:
+        return FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "total deadline exceeded")
+    if fallback:
+        return FlowAgentCoreError(ErrorCode.MODEL_TIMEOUT, "fallback window exceeded")
+    return FlowAgentCoreError(ErrorCode.MAIN_DEADLINE_EXCEEDED, "main deadline exceeded")
+
+
+async def await_capability(ctx: RunContext, awaitable: Any, *, fallback: bool = False,
+                           remote: bool = False) -> Any:
     """在主阶段剩余时间内竞争能力结果与取消，失败时回收本地任务。"""
     from flowagent.core.contracts import ErrorCode, FlowAgentCoreError
 
     try:
         ctx.check_cancel()
-        remaining = ctx.budget.remaining_main_ms()
+        remaining = ctx.budget.fallback_window_ms() if fallback else ctx.budget.remaining_main_ms()
         if remaining <= 0:
-            raise FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "main deadline exceeded before capability call")
+            raise _deadline_error(ctx, fallback=fallback)
     except BaseException:
         # 协程尚未调度，关闭它以免零时限产生无主协程或实际请求。
         close = getattr(awaitable, "close", None)
@@ -337,17 +425,54 @@ async def await_capability(ctx: RunContext, awaitable: Any) -> Any:
         if ctx.cancelled:
             ctx.check_cancel()
         if operation not in done:
-            raise FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "capability deadline exceeded")
+            raise _deadline_error(ctx, fallback=fallback)
         ctx.check_cancel()
-        if ctx.budget.remaining_main_ms() <= 0:
-            raise FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "main capability deadline exceeded")
+        remaining_after = ctx.budget.fallback_window_ms() if fallback else ctx.budget.remaining_main_ms()
+        if remaining_after <= 0:
+            raise _deadline_error(ctx, fallback=fallback)
         return operation.result()
+    except FlowAgentCoreError as exc:
+        if remote and exc.code in (ErrorCode.CANCELLED_BY_USER, ErrorCode.DEADLINE_EXCEEDED,
+                                   ErrorCode.MAIN_DEADLINE_EXCEEDED):
+            ctx.diagnostics["capability_outcome"] = "unknown"
+        raise
+    except asyncio.CancelledError:
+        if remote:
+            ctx.diagnostics["capability_outcome"] = "unknown"
+        raise
     finally:
         pending = await _cancel_and_reap({operation, cancelled})
         if pending:
             # 本地等待已结束不等于远端操作已取消，结果须标记未知。
             ctx.diagnostics["capability_cleanup_pending"] = True
             ctx._children.difference_update(pending)
+
+
+async def await_remote_tool(ctx: RunContext, call: Callable[[], Any]) -> Any:
+    """在实际调度时记录工具尝试；超时/取消后远端结果不能推断。"""
+    from flowagent.core.contracts import ErrorCode, FlowAgentCoreError
+    started = False
+
+    async def dispatch() -> Any:
+        nonlocal started
+        ctx.check_cancel()
+        if ctx.budget.remaining_main_ms() <= 0:
+            raise _deadline_error(ctx)
+        started = True
+        ctx.usage.mcp_attempts += 1
+        return await call()
+
+    try:
+        return await await_capability(ctx, dispatch())
+    except FlowAgentCoreError as exc:
+        if started and exc.code in (ErrorCode.CANCELLED_BY_USER, ErrorCode.DEADLINE_EXCEEDED,
+                                    ErrorCode.MAIN_DEADLINE_EXCEEDED):
+            ctx.diagnostics["capability_outcome"] = "unknown"
+        raise
+    except asyncio.CancelledError:
+        if started:
+            ctx.diagnostics["capability_outcome"] = "unknown"
+        raise
 
 
 def default_budget(clock: Callable[[], float] = _time.monotonic) -> Budget:

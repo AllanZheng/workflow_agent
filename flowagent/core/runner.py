@@ -27,7 +27,7 @@ from flowagent.core.contracts import (
     Status,
     WorkflowSpec,
 )
-from flowagent.core.context import RunContext
+from flowagent.core.context import BudgetExceeded, RunContext
 from flowagent.core.input import normalize_input
 
 logger = logging.getLogger("flowagent.runner")
@@ -80,27 +80,55 @@ class Runner:
     async def stream(self, request: RunInput) -> AsyncIterator[RunEvent]:
         """转发同次执行事件；唯一 run.finished 携带完整 RunResult。
 
-        队列有界：慢消费者时丢弃最旧事件为新事件腾位——run.finished 必须送达，
-        否则消费者永久等待；丢弃的只能是中间进度事件。
+        有界队列中只有进度事件可丢弃；最终正文和终态等待消费者接收。
         """
         queue: asyncio.Queue[RunEvent | None] = asyncio.Queue(maxsize=1024)
+        space_available = asyncio.Event()
 
         def sink(event: RunEvent) -> None:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
-                try:
-                    queue.get_nowait()  # 丢弃最旧事件，保证终态不被挤掉
-                    queue.put_nowait(event)
-                except (asyncio.QueueEmpty, asyncio.QueueFull):
-                    pass
+                pass  # 进度可丢弃，最终正文/终态另走异步背压。
 
-        task = asyncio.create_task(self._execute_and_signal(queue, sink, request))
+        async def sink_async(event: RunEvent) -> None:
+            result = event.data.get("_result")
+            failed = event.kind is EventKind.RUN_FINISHED and result is not None and result.status in (
+                Status.FAILED, Status.CANCELLED)
+            if failed:
+                # 不再需要的未交付正文和进度必须让位给错误终态，停读时也能释放执行号。
+                while not queue.empty():
+                    queue.get_nowait()
+                space_available.set()
+            while queue.full():
+                space_available.clear()
+                await space_available.wait()
+            success = result is not None and result.status not in (Status.FAILED, Status.CANCELLED)
+            current = self._active.get(event.run_id)
+            if current is not None and (event.kind is EventKind.TEXT_DELTA or success):
+                # 检查、入队与提交标记之间不让出事件循环，确保已接受取消不会发布成功终态。
+                current.check_cancel()
+            queue.put_nowait(event)
+            if current is not None and success and event.kind is EventKind.RUN_FINISHED:
+                current._terminal_committed = True
+
+        task = asyncio.create_task(self._execute_and_signal(queue, sink, sink_async, request))
+        stream_ctx: RunContext | None = None
         try:
             while True:
                 event = await queue.get()
+                space_available.set()
                 if event is None:
                     break  # 执行任务已结束（含异常/取消路径）且无 run.finished
+                if stream_ctx is None:
+                    stream_ctx = self._active.get(event.run_id)
+                if event.kind is EventKind.TEXT_DELTA and stream_ctx is not None:
+                    # 总时限和取消后，已排队但未交付正文不得继续发送。
+                    stopped = stream_ctx.cancelled or (
+                        not getattr(stream_ctx, "_terminal_committed", False)
+                        and stream_ctx.budget.remaining_total_ms() <= 0)
+                    if stopped:
+                        continue
                 yield event
                 if event.kind is EventKind.RUN_FINISHED:
                     break
@@ -113,12 +141,14 @@ class Runner:
                 pass
 
     async def _execute_and_signal(
-        self, queue: asyncio.Queue, sink: Callable[[RunEvent], None], request: RunInput
+        self, queue: asyncio.Queue, sink: Callable[[RunEvent], None],
+        sink_async: Callable[[RunEvent], Any], request: RunInput
     ) -> RunResult:
         """执行并入队结束哨兵：消费者在无 run.finished 的路径（异常/取消）也能终止。"""
         try:
-            return await self.execute(request, emit=sink)
-        finally:
+            return await self.execute(request, emit=sink, emit_async=sink_async)
+        except BaseException:
+            # 正常路径已有终态，不能为哨兵挤掉已提交的正文。
             for _attempt in range(2):
                 try:
                     queue.put_nowait(None)
@@ -128,49 +158,120 @@ class Runner:
                         queue.get_nowait()
                     except asyncio.QueueEmpty:
                         pass
+            raise
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         """取消本进程活动任务；不存在/已完成返回明确状态，不声称撤销远端工具。"""
         ctx = self._active.get(run_id)
-        if ctx is None:
+        if ctx is None or getattr(ctx, "_terminal_committed", False):
             return {"run_id": run_id, "cancelled": False, "reason": "not_found_or_finished"}
         ctx.cancel()
         return {"run_id": run_id, "cancelled": True, "reason": "cancelled"}
 
     # ---- 唯一执行实现 ----
     async def execute(
-        self, request: RunInput, *, emit: Callable[[RunEvent], None] | None = None
+        self, request: RunInput, *, emit: Callable[[RunEvent], None] | None = None,
+        emit_async: Callable[[RunEvent], Any] | None = None,
     ) -> RunResult:
         request = normalize_input(request)
         ctx = self.context_factory()
         ctx._emit_sink = emit or (lambda event: None)
+        ctx._async_emit_sink = emit_async
         # 关联调用方请求号（仅诊断，不进入模型上下文）。
         ctx.diagnostics["correlation_id"] = request.correlation_id
         ctx.original_question = str(request.inputs.get("message") or request.inputs.get("question") or "")
         async with self._active_lock:
-            self._active[ctx.run_id] = ctx
+            duplicate = ctx.run_id in self._active
+            if not duplicate:
+                self._active[ctx.run_id] = ctx
+        if duplicate:
+            # 同一执行号不能覆盖仍运行的上下文及其取消句柄。
+            await ctx.aclose()
+            result = RunResult(run_id=ctx.run_id, status=Status.FAILED,
+                               error=FlowAgentCoreError(ErrorCode.INVALID_INPUT, "active run id already exists"))
+            await ctx.emit_async(EventKind.RUN_FINISHED, {"result": result.to_public_dict(), "_result": result})
+            return result
         result: RunResult | None = None
         try:
             result = await self._execute_once(ctx, request)
         finally:
-            ctx.usage.elapsed_ms = ctx.budget.elapsed_ms()
             # 证据随结果传递（回执/知识状态消费；对外序列化时剥离）。
             # 取消/异常路径 result 可能未产出——证据随上下文一起丢弃。
             if result is not None:
                 result.recovery["_evidence_tool_calls"] = list(ctx.evidence.get("tool_calls") or [])
-            async with self._active_lock:
-                self._active.pop(ctx.run_id, None)
-            await ctx.reclaim_children()
-            await ctx.aclose()
+            try:
+                await ctx.reclaim_children()
+                await ctx.aclose()
+            except BaseException:
+                async with self._active_lock:
+                    if self._active.get(ctx.run_id) is ctx:
+                        self._active.pop(ctx.run_id, None)
+                raise
+            ctx.usage.elapsed_ms = ctx.budget.elapsed_ms()
             if result is not None and ctx.diagnostics.get("capability_cleanup_pending"):
                 result.recovery["capability_cleanup_pending"] = True
                 result.recovery["capability_outcome"] = "unknown"
-        assert result is not None
-        result.usage = ctx.usage
-        # 唯一 run.finished：经 ctx.emit 保证 seq 连续递增，携带完整 RunResult。
-        # "_result" 携带原对象供流式适配层取证据；不会进入对外序列化。
-        ctx.emit(EventKind.RUN_FINISHED, {"result": result.to_public_dict(), "_result": result})
-        return result
+            if result is not None and ctx.diagnostics.get("capability_outcome"):
+                result.recovery["capability_outcome"] = ctx.diagnostics["capability_outcome"]
+            async with self._active_lock:
+                if result is not None and (ctx.cancelled or result.status in (
+                        Status.COMPLETED, Status.PARTIAL, Status.NEEDS_INPUT, Status.DEGRADED)):
+                    try:
+                        # 发布前最后检查，已接收取消不得返回业务成功。
+                        ctx.check_cancel()
+                    except FlowAgentCoreError as exc:
+                        result.status = Status.CANCELLED if exc.code is ErrorCode.CANCELLED_BY_USER else Status.FAILED
+                        result.error, result.reply, result.output = exc, "", None
+                        result.clarification = None
+                if result is not None and result.status in (Status.FAILED, Status.CANCELLED):
+                    # 失败或取消不发布未通过校验的候选正文及业务输出。
+                    result.reply, result.output, result.clarification = "", None, None
+                if result is None and self._active.get(ctx.run_id) is ctx:
+                    self._active.pop(ctx.run_id, None)
+        try:
+            assert result is not None
+            result.usage = ctx.usage
+            # 已验证正文在背压期间仍占用执行号，并持续竞争取消与总时限。
+            try:
+                for start in range(0, len(result.reply), 2048):
+                    await self._emit_until_stopped(ctx, EventKind.TEXT_DELTA,
+                                                   {"text": result.reply[start:start + 2048]})
+                ctx.check_cancel()
+                await self._emit_until_stopped(ctx, EventKind.RUN_FINISHED,
+                                               {"result": result.to_public_dict(), "_result": result})
+            except FlowAgentCoreError as exc:
+                result.status = Status.CANCELLED if exc.code is ErrorCode.CANCELLED_BY_USER else Status.FAILED
+                result.error, result.reply, result.output, result.clarification = exc, "", None, None
+                result.recovery["final_source"] = "cancelled" if ctx.cancelled else "error"
+                # 已发送前缀无法撤回；失败终态只传错误，不再发送剩余正文。
+                await ctx.emit_async(EventKind.RUN_FINISHED, {"result": result.to_public_dict(), "_result": result})
+            return result
+        finally:
+            async with self._active_lock:
+                if self._active.get(ctx.run_id) is ctx:
+                    self._active.pop(ctx.run_id, None)
+
+    async def _emit_until_stopped(self, ctx: RunContext, kind: EventKind, data: dict[str, Any]) -> None:
+        """发送遇到背压时竞争取消和总时限，不占用已预留的主阶段窗口。"""
+        ctx.check_cancel()
+        operation = asyncio.create_task(ctx.emit_async(kind, data))
+        cancel_waiter = asyncio.create_task(ctx.wait_cancelled())
+        try:
+            done, _ = await asyncio.wait({operation, cancel_waiter},
+                                         timeout=max(0, ctx.budget.remaining_total_ms() / 1000),
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if kind is EventKind.RUN_FINISHED and operation in done:
+                operation.result()  # 终态一旦进入队列即提交成功。
+                return
+            ctx.check_cancel()
+            if operation not in done:
+                raise FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "total deadline exceeded during output")
+            operation.result()
+        finally:
+            for task in (operation, cancel_waiter):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(operation, cancel_waiter, return_exceptions=True)
 
     # ---- 内部：一次执行 ----
     async def _execute_once(self, ctx: RunContext, request: RunInput) -> RunResult:
@@ -182,14 +283,17 @@ class Runner:
             return await self._handle_primary_error(ctx, request, exc, "not_started")
         route_reason = "registered"
         spec = self.workflows.get(request.workflow)
-        if spec is None:
-            route_reason = "unknown_workflow"
-        elif not self.policy.is_enabled(request.workflow):
-            route_reason = "disabled"
-        else:
-            preflight_reason = await self._preflight(spec, request, ctx)
-            if preflight_reason is not None:
-                route_reason = preflight_reason  # dependency_missing
+        try:
+            if spec is None:
+                route_reason = "unknown_workflow"
+            elif not self.policy.is_enabled(request.workflow):
+                route_reason = "disabled"
+            else:
+                preflight_reason = await self._preflight(spec, request, ctx)
+                if preflight_reason is not None:
+                    route_reason = preflight_reason  # dependency_missing
+        except FlowAgentCoreError as exc:
+            return await self._handle_primary_error(ctx, request, exc, "preflight")
         if (request.workflow == "group_analysis" and request.inputs.get("function_task")
                 and route_reason != "registered"):
             # 平台显式固定任务禁用或缺依赖时，不能伪装为自主任务成功。
@@ -223,6 +327,9 @@ class Runner:
                 result.execution_path = "autonomous"
         except FlowAgentCoreError as exc:
             primary_error = exc
+        except BudgetExceeded as exc:
+            code = ErrorCode.MODEL_BUDGET_EXCEEDED if exc.resource == "model" else ErrorCode.TOOL_BUDGET_EXCEEDED
+            primary_error = FlowAgentCoreError(code, str(exc), cause=exc)
         except asyncio.CancelledError:
             # Task 级取消：标记后继续传播，清理在 execute() 的 finally 完成（S03）。
             ctx.cancel()
@@ -249,9 +356,13 @@ class Runner:
         if spec.preflight is None:
             return None
         try:
-            return await spec.preflight(request.inputs, ctx)
+            from flowagent.core.context import await_capability
+            return await await_capability(ctx, spec.preflight(request.inputs, ctx))
         except FlowAgentCoreError:
             raise
+        except BudgetExceeded as exc:
+            code = ErrorCode.MODEL_BUDGET_EXCEEDED if exc.resource == "model" else ErrorCode.TOOL_BUDGET_EXCEEDED
+            raise FlowAgentCoreError(code, str(exc), cause=exc) from exc
         except Exception as exc:  # noqa: BLE001
             raise FlowAgentCoreError(
                 ErrorCode.CAPABILITY_UNAVAILABLE, f"preflight failed: {exc}") from exc
@@ -293,7 +404,7 @@ class Runner:
     async def _handle_primary_error(
         self, ctx: RunContext, request: RunInput, error: FlowAgentCoreError, route_reason: str
     ) -> RunResult:
-        """未恢复错误 → 唯一直连所有者；取消/授权/时限不进入兜底。"""
+        """未恢复错误交给唯一直连所有者；取消、授权及总时限不得兜底。"""
         recovery: dict[str, Any] = {
             "requested_workflow": request.workflow,
             "route_reason": route_reason,
@@ -352,6 +463,17 @@ class Runner:
             recovery["fallback_error"] = {
                 "code": fallback_error.code.value, "message": str(fallback_error),
             }
+            # 取消与总时限优先于兜底失败，不得将耗尽的总窗口重启。
+            if ctx.cancelled or fallback_error.code is ErrorCode.CANCELLED_BY_USER:
+                recovery["final_source"] = "cancelled"
+                return RunResult(run_id=ctx.run_id, status=Status.CANCELLED,
+                                 error=FlowAgentCoreError(ErrorCode.CANCELLED_BY_USER, "run cancelled by user"),
+                                 execution_path="direct_llm", recovery=recovery)
+            if fallback_error.code is ErrorCode.DEADLINE_EXCEEDED or ctx.budget.remaining_total_ms() <= 0:
+                recovery["final_source"] = "error"
+                return RunResult(run_id=ctx.run_id, status=Status.FAILED,
+                                 error=FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "total deadline exceeded"),
+                                 execution_path="direct_llm", recovery=recovery)
             recovery["final_source"] = "fallback_failed"
             logger.error(
                 "run_fallback_failed run_id=%s workflow=%s primary=%s fallback=%s",
@@ -382,7 +504,8 @@ class Runner:
     ) -> str:
         """本地直连：只带原问题、限长近期文本与错误摘要；无 tools、无 Skill、不重放工具。"""
         ctx.check_cancel()
-        window = ctx.budget.fallback_window_ms()
+        total_remaining = ctx.budget.remaining_total_ms()
+        window = min(ctx.budget.fallback_timeout_ms, total_remaining)
         if window <= 0:
             raise FlowAgentCoreError(ErrorCode.DEADLINE_EXCEEDED, "no time for fallback")
         from flowagent.core.context import BudgetExceeded
@@ -416,8 +539,12 @@ class Runner:
         try:
             from flowagent.core.context import aiter_with_deadline
 
+            # 使用调用前冻结的剩余总窗口，避免取整或内外层竞争误报为普通模型超时。
+            timeout_code = (ErrorCode.DEADLINE_EXCEEDED.value
+                            if total_remaining <= ctx.budget.fallback_timeout_ms else ErrorCode.MODEL_TIMEOUT.value)
             stream = aiter_with_deadline(
-                ctx.stream_model(messages, [], {"timeout_ms": window}), window)
+                ctx.stream_model(messages, [], {"timeout_ms": window}, fallback=True), window,
+                code=timeout_code)
             async for event in stream:
                 if event.kind == "completed":
                     completed = event

@@ -322,10 +322,11 @@ async def test_group_report_repair_obeys_model_budget():
     model = FakeModel([_cls({'m1': '风险类'}), _rep(['m9']), _rep(['m1'])])
     ctx = _ctx(model, FakeTools(catalog=[{'name': FETCH_TOOL}], results={FETCH_TOOL: _payload(_messages(('m1', 'risk')))}))
     ctx.budget.model_total = 3  # 主阶段最多两次，第三次必须被拒绝。
-    result = await build_group_analysis_workflow().run(_group_inputs(Q_3D, target=TARGET), ctx)
+    from flowagent.core.contracts import ErrorCode, FlowAgentCoreError
+    with pytest.raises(FlowAgentCoreError) as exc:
+        await build_group_analysis_workflow().run(_group_inputs(Q_3D, target=TARGET), ctx)
     assert model.call_count == 2 and ctx.budget.model_spent == 2
-    assert result.status.value == 'partial'
-    assert 'report_refs_invalid' in result.output['analysis_result']['partial_reasons']
+    assert exc.value.code is ErrorCode.MODEL_BUDGET_EXCEEDED
 
 
 @pytest.mark.anyio

@@ -129,7 +129,8 @@ def test_group_task_real_route_discovers_and_calls_frozen_alias(monkeypatch, str
     assert response.status_code == 200, response.text
     if stream:
         events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
-        assert [e['kind'] for e in events] == ['meta', 'done']
+        assert events[0]['kind'] == 'meta' and events[-1]['kind'] == 'done'
+        assert ''.join(e['content'] for e in events if e['kind'] == 'delta') == events[-1]['content']
         metadata = events[-1]['metadata']
     else:
         metadata = response.json()['metadata']

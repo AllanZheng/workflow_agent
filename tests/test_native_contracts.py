@@ -73,6 +73,7 @@ def test_error_code_enum_complete() -> None:
         "CONTEXT_LIMIT_EXCEEDED",
         "DUPLICATE_TOOL_CALL",
         "CLARIFICATION_EXHAUSTED",
+        "MAIN_DEADLINE_EXCEEDED",
         "DEADLINE_EXCEEDED",
         "OUTPUT_INVALID",
         "INTERNAL_ERROR",
@@ -83,7 +84,7 @@ def test_error_code_enum_complete() -> None:
     }
     actual = {member.value for member in ErrorCode}
     assert actual == expected
-    assert len(ErrorCode) == 20
+    assert len(ErrorCode) == 21
     # 每个成员的 name 与 value 一致，日志/信封无需两套拼写
     assert {member.name for member in ErrorCode} == expected
     assert ErrorCode("MODEL_TIMEOUT") is ErrorCode.MODEL_TIMEOUT

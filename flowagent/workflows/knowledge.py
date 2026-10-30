@@ -39,11 +39,14 @@ def build_knowledge_workflow(*, bindings: dict[str, str] | None = None) -> Workf
             raise FlowAgentCoreError(ErrorCode.INVALID_INPUT, "question required")
         ctx.step = "knowledge.search"
         ctx.check_cancel()
-        await ctx.budget.reserve_tool()
-        ctx.usage.mcp_attempts += 1
+        from flowagent.core.context import BudgetExceeded, await_remote_tool
+        try:
+            await ctx.budget.reserve_tool()
+        except BudgetExceeded as exc:
+            raise FlowAgentCoreError(ErrorCode.TOOL_BUDGET_EXCEEDED, str(exc)) from exc
         from flowagent.core.contracts import ToolResultData
 
-        result = await ctx.tools.call(bindings["search"], {"query": question})
+        result = await await_remote_tool(ctx, lambda: ctx.tools.call(bindings["search"], {"query": question}))
         # 检索计入证据：知识状态/引用过滤的唯一依据（K01/K02）。
         ctx.record_tool(bindings["search"], {"query": question}, result)
         if result.status in ("error", "unknown"):

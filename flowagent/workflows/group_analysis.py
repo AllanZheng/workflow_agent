@@ -139,9 +139,9 @@ async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, A
         await ctx.budget.reserve_tool()
     except BudgetExceeded as exc:
         raise FlowAgentCoreError(ErrorCode.TOOL_BUDGET_EXCEEDED, str(exc)) from exc
-    ctx.usage.mcp_attempts += 1
     fetch_arguments = control_to_fetch_arguments(control)
-    fetch_result = await ctx.tools.call(fetch_tool, fetch_arguments)
+    from flowagent.core.context import await_remote_tool
+    fetch_result = await await_remote_tool(ctx, lambda: ctx.tools.call(fetch_tool, fetch_arguments))
     # 取数计入证据（回执/诊断依据）；远端名解析兼容固定别名。
     resolver = getattr(ctx.tools, "remote_name", None)
     remote_name = (resolver(fetch_tool) if callable(resolver) else fetch_tool) or fetch_tool
@@ -436,7 +436,8 @@ async def _classify_batch(
         except FlowAgentCoreError as exc:
             # 授权、取消、预算等终止条件不能伪装为分类格式失败并继续请求。
             if exc.code in (ErrorCode.AUTHORIZATION_DENIED, ErrorCode.CANCELLED_BY_USER,
-                            ErrorCode.DEADLINE_EXCEEDED, ErrorCode.MODEL_BUDGET_EXCEEDED,
+                            ErrorCode.DEADLINE_EXCEEDED, ErrorCode.MAIN_DEADLINE_EXCEEDED,
+                            ErrorCode.MODEL_BUDGET_EXCEEDED,
                             ErrorCode.CONTEXT_LIMIT_EXCEEDED):
                 raise
         except (ValueError, TypeError):
@@ -493,9 +494,8 @@ async def _build_report(
         except Exception as exc:
             from flowagent.core.context import BudgetExceeded
             if isinstance(exc, BudgetExceeded):
-                if attempt:
-                    return report, refs, True
-                return _program_partial_report(control, stats, [], []), [], attempt > 0
+                # 预算耗尽不能伪装成已完成的程序报告，交唯一兜底所有者。
+                raise FlowAgentCoreError(ErrorCode.MODEL_BUDGET_EXCEEDED, str(exc)) from exc
             raise
         completed = None
         async for event in ctx.stream_model(

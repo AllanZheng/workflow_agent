@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from flowagent.core.context import BudgetExceeded
+from flowagent.core.context import BudgetExceeded, await_capability, await_remote_tool
 from flowagent.core.contracts import (
     ErrorCode,
     EventKind,
@@ -93,9 +93,15 @@ class ToolRegistry:
             skill_id = str(arguments.get("skill_id") or "")
             try:
                 if skill_id not in self._skill_bodies:
+                    # 只统计实际开始的正文加载，缓存命中不重复计数。
+                    if ctx is not None:
+                        ctx.usage.skill_loads += 1
                     self._skill_bodies[skill_id] = await self.skills.load(skill_id)
                 return ToolResultData.success(self._skill_bodies[skill_id])
             except FlowAgentCoreError as exc:
+                if exc.code in (ErrorCode.AUTHORIZATION_DENIED, ErrorCode.CANCELLED_BY_USER,
+                                ErrorCode.DEADLINE_EXCEEDED, ErrorCode.MAIN_DEADLINE_EXCEEDED):
+                    raise
                 return ToolResultData.error(str(exc), ErrorCode.SKILL_LOAD_FAILED.value)
             except Exception as exc:  # noqa: BLE001 - Skill 失败不终止循环
                 return ToolResultData.error(f"skill load failed: {exc}", ErrorCode.SKILL_LOAD_FAILED.value)
@@ -147,7 +153,7 @@ async def run_agent(
     messages.append({"role": "user", "content": user_message})
 
     seen_effective: set[str] = set()
-    schemas = _tool_schemas(await registry.list())
+    schemas = _tool_schemas(await await_capability(ctx, registry.list()))
     rounds = 0
 
     while True:
@@ -200,6 +206,22 @@ async def run_agent(
             ctx.emit(EventKind.STEP_FINISHED, {"round": rounds - 1, "published": True})
             return AgentOutcome(text=text, rounds=rounds)
 
+        # 不能关联工具响应的 ID 属于协议损坏，不发送孤立 tool 消息。
+        ids = [call.get("id") for call in tool_calls if isinstance(call, dict)]
+        if (len(ids) != len(tool_calls) or any(not isinstance(item, str) or not item.strip() for item in ids)
+                or len(set(ids)) != len(ids)):
+            raise FlowAgentCoreError(ErrorCode.MODEL_INVALID_RESPONSE, "tool call ids are missing or duplicated")
+        assistant_message = {
+            "role": "assistant", "content": completed.text or "",
+            "tool_calls": [
+                {"id": call["id"], "type": "function", "function": {
+                    "name": call.get("name"),
+                    "arguments": json.dumps(call["arguments"], ensure_ascii=False)
+                    if isinstance(call.get("arguments"), dict) else call.get("arguments") or ""}}
+                for call in tool_calls
+            ],
+        }
+        messages.append(assistant_message)
         # ---- 批次校验：先整批后执行；非法批次零部分执行 ----
         batch_error = _validate_batch(tool_calls, schemas, registry)
         if batch_error is not None:
@@ -214,12 +236,26 @@ async def run_agent(
                 })
             continue
 
+        # 重复检查必须覆盖整批，避免后项重复时前项已经产生副作用。
+        if duplicate_guard:
+            batch_keys: set[str] = set()
+            for call in tool_calls:
+                if call['name'] == _LOAD_SKILL:
+                    continue
+                arguments = parse_tool_call_arguments(call)
+                key = _effective_key(call['name'], arguments)
+                if key in seen_effective or key in batch_keys:
+                    raise FlowAgentCoreError(ErrorCode.DUPLICATE_TOOL_CALL,
+                                             f"duplicate effective call: {call['name']} {arguments}")
+                batch_keys.add(key)
+            seen_effective.update(batch_keys)
+
         # ---- 执行：终端工具独占一轮 ----
         first = tool_calls[0]
         if _is_terminal(registry, first["name"]):
             ctx.emit(EventKind.STEP_STARTED, {"terminal_tool": first["name"]})
-            result = await registry.call_local(
-                first["name"], parse_tool_call_arguments(first), ctx)
+            result = await await_capability(ctx, registry.call_local(
+                first["name"], parse_tool_call_arguments(first), ctx))
             ctx.record_tool(first["name"], {}, result, remote=False)
             ctx.emit(EventKind.TOOL_FINISHED, {"name": first["name"], "status": result.status})
             terminal = result.terminal
@@ -231,27 +267,9 @@ async def run_agent(
             return AgentOutcome(terminal=terminal, rounds=rounds)
 
         # ---- 普通工具按序执行 ----
-        assistant_message = {
-            "role": "assistant", "content": completed.text or "",
-            "tool_calls": [
-                {"id": call.get("id"), "type": "function",
-                 "function": {"name": call.get("name"), "arguments": call.get("arguments") or ""}}
-                for call in tool_calls
-            ],
-        }
-        messages.append(assistant_message)
         for call in tool_calls:
             name = call["name"]
             arguments = parse_tool_call_arguments(call)
-            if duplicate_guard and name != _LOAD_SKILL:
-                key = _effective_key(name, arguments)
-                if key in seen_effective:
-                    raise FlowAgentCoreError(
-                        ErrorCode.DUPLICATE_TOOL_CALL,
-                        f"duplicate effective call: {name} {arguments}",
-                    )
-                seen_effective.add(key)
-
             result = await _execute_remote(ctx, registry, name, arguments)
             ctx.record_tool(name, arguments, result,
                             remote_name=_remote_name_of(registry, name))
@@ -320,9 +338,15 @@ async def _execute_remote(
 ) -> ToolResultData:
     """远程/本地普通工具执行：额度预占 + 结果四态（load_skill 走本地）。"""
     if name == _LOAD_SKILL or name in registry.local:
-        result = await registry.call_local(name, arguments, ctx)
-        if name == _LOAD_SKILL and result.status == "success":
-            ctx.usage.skill_loads += 1
+        cached = name == _LOAD_SKILL and str(arguments.get("skill_id") or "") in registry._skill_bodies
+        if name == _LOAD_SKILL and not cached:
+            ctx.check_cancel()
+            try:
+                # 未缓存的 Skill 加载与 MCP 共享工具额度，但不算 MCP 尝试。
+                await ctx.budget.reserve_tool()
+            except BudgetExceeded as exc:
+                raise FlowAgentCoreError(ErrorCode.TOOL_BUDGET_EXCEEDED, str(exc)) from exc
+        result = await await_capability(ctx, registry.call_local(name, arguments, ctx))
         return result
     if registry.remote is None:
         return ToolResultData.error("no remote tools available", ErrorCode.CAPABILITY_UNAVAILABLE.value)
@@ -332,8 +356,7 @@ async def _execute_remote(
     except BudgetExceeded as exc:
         raise FlowAgentCoreError(
             ErrorCode.TOOL_BUDGET_EXCEEDED, str(exc)) from exc
-    ctx.usage.mcp_attempts += 1
-    return await registry.remote.call(name, arguments)
+    return await await_remote_tool(ctx, lambda: registry.remote.call(name, arguments))
 
 
 def _remote_name_of(registry: "ToolRegistry", name: str) -> str:
@@ -360,10 +383,7 @@ async def _consume_stream(
         max(1_000.0, ctx.budget.remaining_main_ms()),
     )
     async for event in stream:
-        if event.kind == "text_delta":
-            # 进度可实时显示；发布与否由最终轮判定（缓冲策略）。
-            ctx.emit(EventKind.TEXT_DELTA, {"text": event.text})
-        elif event.kind == "completed":
+        if event.kind == "completed":
             completed = event
     if completed is None:
         raise FlowAgentCoreError(ErrorCode.MODEL_INVALID_RESPONSE, "stream ended without completed")
