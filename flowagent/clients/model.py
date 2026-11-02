@@ -4,7 +4,7 @@
 - SDK 自动重试关闭（max_retries=0）：恢复只有一个所有者（内核单轮恢复）。
 - 不依赖 langchain；消息为 OpenAI 线格式 dict（role/content/tool_calls/tool_call_id）。
 - 流式：text_delta / tool_delta 增量 + 一次 completed（完整正文、聚合工具调用、usage）。
-- Qwen 模板：默认经 extra_body 关思考；系统消息只有一条（由调用方保证）。
+- 可选厂商参数仅从显式配置传入；系统消息只有一条（由调用方保证）。
 """
 from __future__ import annotations
 

@@ -76,7 +76,7 @@ def build_capabilities(
         model_name=snapshot.model.model_name,
         temperature=(snapshot.model.parameters.temperature
                      if snapshot.model.parameters.temperature is not None else 0.0),
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        # 托管快照未指定厂商推理开关时不强制覆盖模型服务默认行为。
         client=model_transport, on_request=model_context.record_request,
     )
     model = AuthorizedModel(
