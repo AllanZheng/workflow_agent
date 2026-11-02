@@ -40,7 +40,8 @@ RESOLVE_TOOL = "platform_resolve_group"
 _CLASSIFIER_SYSTEM = "你是群消息分类器，不编造消息引用。"
 _REPORT_SYSTEM = (
     "你是群分析报告撰写人。基于消息摘录撰写中文定性摘要和建议；"
-    "程序会生成分类统计，你的正文不得包含数字、数量、比例、排序或数量比较；"
+    "程序会生成分类统计，你的正文不得包含数量、比例、排序或数量比较；"
+    "若需提及时间，必须逐字来自末尾引用的消息；"
     "不要单独编写分类统计。不得引用给定范围之外的消息。"
 )
 
@@ -484,7 +485,7 @@ async def _build_report(
     prompt = (
         f"时间窗：{control.start} ~ {control.end_exclusive}\n"
         f"消息（引用只能使用其中的 message_ref）：{digest}\n"
-        "只描述事件及建议，不写数量、比例、排序或数量比较；"
+        "只描述事件及建议，不写数量、比例、排序或数量比较；时间仅可逐字引用所列消息；"
         "如需引用，在末尾单独一行输出引用列表：引用: [m1, m2]"
     )
     report, refs, issue = "", [], None
@@ -511,7 +512,7 @@ async def _build_report(
             issue = "report_summary_invalid"
             continue
         report = (completed.text if completed else "") or ""
-        summary, refs, issue = _validate_report_summary(report, valid_refs)
+        summary, refs, issue = _validate_report_summary(report, valid_refs, messages)
         if issue is None:
             return _render_report(stats, summary, refs), refs, attempt > 0, None
     return "", [], True, issue
@@ -539,6 +540,20 @@ _QUANTITY = re.compile(
 )
 _SUMMARY_HEADING = re.compile(r"^\s*#{1,6}\s*(?:总结|分类统计|汇报要点)\s*$")
 _ORDINARY_NUMERAL_WORDS = ("进一步", "下一步", "一旦", "一律", "一致", "统一", "一起", "一直", "一线", "零件")
+# 范围必须整体匹配同一引用消息；不能用不同消息的两个时点拼造一个范围。
+_RELATIVE_DAY = r"(?:(?:前天|昨天|今天|今日|明天|后天|本周|上周|下周|周[一二三四五六日天]|星期[一二三四五六日天])\s*)?"
+_CLOCK_HOUR = r"(?:1[0-2]|0?[0-9]|十[一二]?|[零一二两三四五六七八九])"
+_CLOCK_MINUTE = r"(?:半|(?:[0-5]?[0-9]|[零一二两三四五六七八九十]{1,3})分)?"
+_CLOCK = rf"{_RELATIVE_DAY}(?:凌晨|早上|上午|中午|下午|傍晚|晚上)\s*{_CLOCK_HOUR}\s*(?:点|时){_CLOCK_MINUTE}"
+_CLOCK_RANGE_END = rf"(?:{_CLOCK}|{_CLOCK_HOUR}\s*(?:点|时){_CLOCK_MINUTE})"
+_CLOCK_24 = rf"{_RELATIVE_DAY}(?<![0-9])(?:[01]?[0-9]|2[0-3]):[0-5][0-9](?![0-9])"
+_TIME_BOUNDARY_PREFIX = r"(?:(?:不早于|不晚于|早于|晚于|截至|截止到|不超过|至少|最早|最晚)\s*)?"
+_TIME_BOUNDARY_SUFFIX = r"(?:之前|之后|以前|以后|前后|左右|附近|前|后)?"
+_SOURCE_TIME = re.compile(
+    rf"{_TIME_BOUNDARY_PREFIX}(?:{_CLOCK}|{_CLOCK_24})"
+    rf"(?:\s*(?:至|到|~|～|—|–|-)\s*(?:{_CLOCK_RANGE_END}|{_CLOCK_24}))?{_TIME_BOUNDARY_SUFFIX}"
+    r"(?!\s*(?:多|余)?\s*(?:条|个|次|项|例|件|宗|类|种|份|%))"
+)
 
 
 def _extract_report_refs(report: str) -> list[str]:
@@ -550,10 +565,12 @@ def _extract_report_refs(report: str) -> list[str]:
 
 def _REF_FEEDBACK(valid_refs: list[str]) -> str:
     return (f"\n引用列表只能包含这些 message_ref：{json.dumps(valid_refs, ensure_ascii=False)}；"
-            "请删除正文中所有数字、数量、比例、排序及数量比较，只保留定性摘要后重发。")
+            "时间须逐字来自所引用消息；请删除其他数字、数量、比例、排序及数量比较后重发。")
 
 
-def _validate_report_summary(report: str, valid_refs: list[str]) -> tuple[str, list[str], str | None]:
+def _validate_report_summary(
+    report: str, valid_refs: list[str], messages: list[dict[str, Any]],
+) -> tuple[str, list[str], str | None]:
     """校验完整模型正文；末尾引用仅作标识符，不能参与数值判断。"""
     lines = report.strip().splitlines()
     refs = _extract_report_refs(report)
@@ -571,10 +588,25 @@ def _validate_report_summary(report: str, valid_refs: list[str]) -> tuple[str, l
         return "", [], "report_summary_invalid"
     if not any(char.isalpha() for line in lines if not _SUMMARY_HEADING.fullmatch(line) for char in line):
         return "", [], "report_summary_invalid"
-    # 先在原文检查数量语境，再去除有限的普通词；避免白名单组合掩盖数词。
-    if _QUANTITY.search(normalized):
+    source_texts = [str(item.get("text") or "") for item in messages
+                    if str(item.get("message_ref") or "") in refs]
+    # 两侧使用相同规则识别完整时间 token，避免截掉“半/以后/范围”等限定。
+    source_times = {match.group() for source in source_texts for match in _SOURCE_TIME.finditer(source)}
+    time_matches = list(_SOURCE_TIME.finditer(summary))
+    for quantity in _QUANTITY.finditer(summary):
+        if not any(match.start() <= quantity.start() and quantity.end() <= match.end() for match in time_matches):
+            return "", [], "report_summary_invalid"
+    summary_without_time = summary
+    for match in reversed(time_matches):
+        token = match.group()
+        if token not in source_times:
+            return "", [], "report_summary_invalid"
+        summary_without_time = summary_without_time[:match.start()] + summary_without_time[match.end():]
+    normalized_without_time = unicodedata.normalize("NFKC", summary_without_time)
+    # 已核验时间以外仍检查数量语境，再去除有限普通词，防止放开统计数字。
+    if _QUANTITY.search(normalized_without_time):
         return "", [], "report_summary_invalid"
-    numeral_text = normalized
+    numeral_text = normalized_without_time
     for word in _ORDINARY_NUMERAL_WORDS:
         numeral_text = numeral_text.replace(word, "")
     if any(char.isnumeric() or char == "两" for char in numeral_text):
