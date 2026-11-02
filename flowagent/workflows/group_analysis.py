@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 from flowagent.core.input import continuation_clock
 
@@ -205,7 +207,7 @@ async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, A
 
     # ---- 报告与引用校验（最多一次同证据修复）----
     ctx.step = "group.report"
-    report, report_refs, report_repaired, report_issue = await _build_report(
+    report, report_refs, report_repaired, report_issue, metadata_removed = await _build_report(
         ctx, control, stats, messages, sorted(assignments))
 
     partial_reasons: list[str] = list(raw.get("partial_reasons") or [])
@@ -240,6 +242,7 @@ async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, A
         },
         "report_refs": report_refs,
         "report_repair_attempted": report_repaired,
+        "report_source_metadata_removed": metadata_removed,
         "status": "complete" if status is Status.COMPLETED else "partial",
         "partial_reasons": sorted(set(partial_reasons)),
     }
@@ -477,7 +480,7 @@ def _compute_statistics(
 async def _build_report(
     ctx: Any, control: GroupControl, stats: dict[str, Any],
     messages: list[dict[str, Any]], valid_refs: list[str],
-) -> tuple[str, list[str], bool, str | None]:
+) -> tuple[str, list[str], bool, str | None, int]:
     """仅发布校验通过的定性摘要，统计始终由程序生成。"""
     digest = json.dumps(
         [{"message_ref": str(m.get("message_ref") or ""), "text": str(m.get("text") or "")[:160]}
@@ -512,10 +515,10 @@ async def _build_report(
             issue = "report_summary_invalid"
             continue
         report = (completed.text if completed else "") or ""
-        summary, refs, issue = _validate_report_summary(report, valid_refs, messages)
+        summary, refs, issue, metadata_removed = _validate_report_summary(report, valid_refs, messages)
         if issue is None:
-            return _render_report(stats, summary, refs), refs, attempt > 0, None
-    return "", [], True, issue
+            return _render_report(stats, summary, refs, metadata_removed), refs, attempt > 0, None, metadata_removed
+    return "", [], True, issue, 0
 
 
 _REF_LINE = re.compile(r"引用\s*[:：]\s*\[([^\]]*)\]\s*")
@@ -539,7 +542,11 @@ _QUANTITY = re.compile(
     re.IGNORECASE,
 )
 _SUMMARY_HEADING = re.compile(r"^\s*#{1,6}\s*(?:总结|分类统计|汇报要点)\s*$")
-_ORDINARY_NUMERAL_WORDS = ("进一步", "下一步", "一旦", "一律", "一致", "统一", "一起", "一直", "一线", "零件")
+_ORDINARY_NUMERAL_WORDS = ("进一步", "下一步", "一旦", "一律", "一致", "统一", "一起", "一直", "一线", "零件", "参会", "参加", "参与")
+# 仅承认与有时区 timestamp 交叉验证的 Edge 头部，不能把内容中的方括号当可信时间。
+_UTC_STAMP = r"\[(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]) (?:[01][0-9]|2[0-3]):[0-5][0-9]\]"
+_EDGE_PREFIX = re.compile(rf"^(?P<stamp>{_UTC_STAMP})(?=\s)")
+_EDGE_MENTION = re.compile(rf"(?m)(?P<lead>^|(?<=[。！？!?]))[ \t]*在[ \t]*(?P<stamp>{_UTC_STAMP})[ \t]*[，,][ \t]*")
 # 范围必须整体匹配同一引用消息；不能用不同消息的两个时点拼造一个范围。
 _RELATIVE_DAY = r"(?:(?:前天|昨天|今天|今日|明天|后天|本周|上周|下周|周[一二三四五六日天]|星期[一二三四五六日天])\s*)?"
 _CLOCK_HOUR = r"(?:1[0-2]|0?[0-9]|十[一二]?|[零一二两三四五六七八九])"
@@ -568,58 +575,109 @@ def _REF_FEEDBACK(valid_refs: list[str]) -> str:
             "时间须逐字来自所引用消息；请删除其他数字、数量、比例、排序及数量比较后重发。")
 
 
+def _source_body_and_stamp(item: dict[str, Any]) -> tuple[str, str | None]:
+    text = str(item.get("text") or "")
+    prefix = _EDGE_PREFIX.match(text)
+    if not prefix:
+        return text, None
+    # 即使前缀没有可信时间字段，也不能把其内 UTC 时刻冒充业务原文时间。
+    source_body = text[prefix.end():]
+    raw_timestamp = item.get("timestamp")
+    if not isinstance(raw_timestamp, str):
+        return source_body, None
+    try:
+        parsed = datetime.fromisoformat(raw_timestamp.removesuffix("Z") + "+00:00"
+                                        if raw_timestamp.endswith("Z") else raw_timestamp)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return source_body, None
+        expected = parsed.astimezone(timezone.utc).strftime("[%m-%d %H:%M]")
+    except (ValueError, OverflowError):
+        return source_body, None
+    return source_body, expected if expected == prefix.group("stamp") else None
+
+
+def _sanitize_source_metadata(summary: str, messages: list[dict[str, Any]], refs: list[str]) -> tuple[str, int]:
+    # 每个可清洗标记都必须有独立的已引用来源，且只能删除句首“在 [UTC 标记]，”。
+    cited: dict[str, dict[str, Any]] = {}
+    for item in messages:
+        ref = str(item.get("message_ref") or "")
+        if ref in refs:
+            cited.setdefault(ref, item)
+    stamps = Counter(stamp for item in cited.values() for _, stamp in [_source_body_and_stamp(item)] if stamp)
+    removed = 0
+
+    def strip(match: re.Match[str]) -> str:
+        nonlocal removed
+        stamp = match.group("stamp")
+        if stamps[stamp] <= 0:
+            return match.group()
+        stamps[stamp] -= 1
+        removed += 1
+        return match.group("lead")
+
+    return _EDGE_MENTION.sub(strip, summary), removed
+
+
 def _validate_report_summary(
     report: str, valid_refs: list[str], messages: list[dict[str, Any]],
-) -> tuple[str, list[str], str | None]:
+) -> tuple[str, list[str], str | None, int]:
     """校验完整模型正文；末尾引用仅作标识符，不能参与数值判断。"""
     lines = report.strip().splitlines()
     refs = _extract_report_refs(report)
     if lines and _REF_LINE.fullmatch(lines[-1]):
         lines = lines[:-1]
     summary = "\n".join(lines).strip()
+    if any(ref not in valid_refs for ref in refs):
+        return "", [], "report_refs_invalid", 0
+    summary, metadata_removed = _sanitize_source_metadata(summary, messages, refs)
+    lines = summary.splitlines()
     normalized = unicodedata.normalize("NFKC", summary)
     # 数字或引用标识只能留在已验证的末行，避免正文冒充可信引用。
-    if (any(ref not in valid_refs for ref in refs) or any(ch in normalized for ch in "[]【】《》")
+    if (any(ch in normalized for ch in "[]【】《》")
             or re.search(r"引用\s*:|(?:参见|依据|来源|引用|参考|出自)\s*[【《]", normalized)):
-        return "", [], "report_refs_invalid"
+        return "", [], "report_refs_invalid", 0
     if any(re.match(r"^\s*#{1,6}\s*", line) and not _SUMMARY_HEADING.fullmatch(line) for line in lines):
-        return "", [], "report_summary_invalid"
+        return "", [], "report_summary_invalid", 0
     if "<" in normalized or ">" in normalized:
-        return "", [], "report_summary_invalid"
+        return "", [], "report_summary_invalid", 0
     if not any(char.isalpha() for line in lines if not _SUMMARY_HEADING.fullmatch(line) for char in line):
-        return "", [], "report_summary_invalid"
-    source_texts = [str(item.get("text") or "") for item in messages
+        return "", [], "report_summary_invalid", 0
+    source_texts = [_source_body_and_stamp(item)[0] for item in messages
                     if str(item.get("message_ref") or "") in refs]
     # 两侧使用相同规则识别完整时间 token，避免截掉“半/以后/范围”等限定。
-    source_times = {match.group() for source in source_texts for match in _SOURCE_TIME.finditer(source)}
+    # 方括号是另一种未授权引用格式，不得从其中单独抽出裸时间作为业务来源。
+    unbracketed = [re.sub(r"\[[^\]]*\]|【[^】]*】|《[^》]*》", "", source) for source in source_texts]
+    source_times = {match.group() for source in unbracketed for match in _SOURCE_TIME.finditer(source)}
     time_matches = list(_SOURCE_TIME.finditer(summary))
     for quantity in _QUANTITY.finditer(summary):
         if not any(match.start() <= quantity.start() and quantity.end() <= match.end() for match in time_matches):
-            return "", [], "report_summary_invalid"
+            return "", [], "report_summary_invalid", 0
     summary_without_time = summary
     for match in reversed(time_matches):
         token = match.group()
         if token not in source_times:
-            return "", [], "report_summary_invalid"
+            return "", [], "report_summary_invalid", 0
         summary_without_time = summary_without_time[:match.start()] + summary_without_time[match.end():]
     normalized_without_time = unicodedata.normalize("NFKC", summary_without_time)
     # 已核验时间以外仍检查数量语境，再去除有限普通词，防止放开统计数字。
     if _QUANTITY.search(normalized_without_time):
-        return "", [], "report_summary_invalid"
+        return "", [], "report_summary_invalid", 0
     numeral_text = normalized_without_time
     for word in _ORDINARY_NUMERAL_WORDS:
         numeral_text = numeral_text.replace(word, "")
     if any(char.isnumeric() or char == "两" for char in numeral_text):
-        return "", [], "report_summary_invalid"
-    return summary, refs, None
+        return "", [], "report_summary_invalid", 0
+    return summary, refs, None, metadata_removed
 
 
-def _render_report(stats: dict[str, Any], summary: str, refs: list[str]) -> str:
+def _render_report(stats: dict[str, Any], summary: str, refs: list[str], metadata_removed: int = 0) -> str:
     # 分类总数、计数及比例直接渲染自程序统计，不复用模型产出的统计段。
     lines = ["## 分类统计", f"可信分类：{stats['total_messages']} 条"]
     for category in stats["categories"]:
         lines.append(f"- {category['name']}：{category['count']} 条（{category['ratio']}%）")
     lines.append("## 汇报要点")
+    if metadata_removed:
+        lines.append("（已省略来源系统的 UTC 时间标签）")
     lines.extend(line for line in summary.splitlines() if not _SUMMARY_HEADING.fullmatch(line))
     if refs:
         lines.append(f"引用: [{', '.join(refs)}]")
