@@ -30,7 +30,7 @@ def _setup(monkeypatch, turns):
 def _turn(category):
     classification = json.dumps({'assignments': [{'message_ref': 'm1', 'category': category}]}, ensure_ascii=False)
     return [[_text_chunk(classification), _final_chunk()],
-            [_text_chunk('## 总结\n一条消息\n## 分类统计\n1条\n## 汇报要点\n跟进\n引用: [m1]'), _final_chunk()]]
+            [_text_chunk('## 总结\n消息需跟进\n## 汇报要点\n复查\n引用: [m1]'), _final_chunk()]]
 
 
 def _send(client, envelope):

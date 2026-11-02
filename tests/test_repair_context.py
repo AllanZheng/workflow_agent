@@ -303,8 +303,8 @@ async def test_group_model_requests_and_tokens_include_report_repair():
     from flowagent.workflows.group_analysis import build_group_analysis_workflow, FETCH_TOOL
     from tests.native_helpers import FakeTools
     scripts = [FakeModel.text_turn('{"assignments":[{"message_ref":"m1","category":"风险类"}]}', usage={'input_tokens': 1, 'output_tokens': 2}),
-               FakeModel.text_turn('引用: [m9]', usage={'input_tokens': 3, 'output_tokens': 4}),
-               FakeModel.text_turn('引用: [m1]', usage={'input_tokens': 5, 'output_tokens': 6})]
+               FakeModel.text_turn('需关注。\n引用: [m9]', usage={'input_tokens': 3, 'output_tokens': 4}),
+               FakeModel.text_turn('需关注。\n引用: [m1]', usage={'input_tokens': 5, 'output_tokens': 6})]
     model = FakeModel(scripts)
     tools = FakeTools(catalog=[{'name': FETCH_TOOL}], results={FETCH_TOOL: _payload(_messages(('m1', 'risk')))})
     ctx = _ctx(model, tools)

@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from typing import Any
 from flowagent.core.input import continuation_clock
 
@@ -37,9 +39,9 @@ RESOLVE_TOOL = "platform_resolve_group"
 
 _CLASSIFIER_SYSTEM = "你是群消息分类器，不编造消息引用。"
 _REPORT_SYSTEM = (
-    "你是群分析报告撰写人。基于给定的分类统计与消息摘录输出中文 Markdown 报告，"
-    "只包含 ## 总结、## 分类统计、## 汇报要点 三节；引用消息时使用其 message_ref；"
-    "不得改写统计数字，不得引用给定范围之外的消息。"
+    "你是群分析报告撰写人。基于消息摘录撰写中文定性摘要和建议；"
+    "程序会生成分类统计，你的正文不得包含数字、数量、比例、排序或数量比较；"
+    "不要单独编写分类统计。不得引用给定范围之外的消息。"
 )
 
 
@@ -202,18 +204,17 @@ async def _run_group_analysis(inputs: dict[str, Any], ctx: Any, cfg: dict[str, A
 
     # ---- 报告与引用校验（最多一次同证据修复）----
     ctx.step = "group.report"
-    report, report_refs, report_repaired = await _build_report(
+    report, report_refs, report_repaired, report_issue = await _build_report(
         ctx, control, stats, messages, sorted(assignments))
-    invalid_refs = [ref for ref in report_refs if ref not in assignments]
 
     partial_reasons: list[str] = list(raw.get("partial_reasons") or [])
     if failed_refs:
         partial_reasons.append("classification_failed")
     if unprocessed:
         partial_reasons.append("message_too_large")
-    if invalid_refs:
-        # 引用修复仍无效：不展示无效引用，降级程序 partial 报告（有意行为）。
-        partial_reasons.append("report_refs_invalid")
+    if report_issue:
+        # 两次摘要校验失败沿用原有 partial 契约；不外发未经校验的模型正文。
+        partial_reasons.append(report_issue)
         report, report_refs = _program_partial_report(control, stats, failed_refs, unprocessed), []
 
     status = Status.PARTIAL if (partial_reasons or upstream_partial) else Status.COMPLETED
@@ -475,18 +476,18 @@ def _compute_statistics(
 async def _build_report(
     ctx: Any, control: GroupControl, stats: dict[str, Any],
     messages: list[dict[str, Any]], valid_refs: list[str],
-) -> tuple[str, list[str], bool]:
-    """生成报告并校验引用；无效引用最多同证据修复一次。"""
+) -> tuple[str, list[str], bool, str | None]:
+    """仅发布校验通过的定性摘要，统计始终由程序生成。"""
     digest = json.dumps(
         [{"message_ref": str(m.get("message_ref") or ""), "text": str(m.get("text") or "")[:160]}
          for m in messages], ensure_ascii=False)
     prompt = (
         f"时间窗：{control.start} ~ {control.end_exclusive}\n"
-        f"分类统计：{json.dumps(stats, ensure_ascii=False)}\n"
         f"消息（引用只能使用其中的 message_ref）：{digest}\n"
-        "末尾单独一行输出引用列表：引用: [m1, m2]"
+        "只描述事件及建议，不写数量、比例、排序或数量比较；"
+        "如需引用，在末尾单独一行输出引用列表：引用: [m1, m2]"
     )
-    report, refs = "", []
+    report, refs, issue = "", [], None
     for attempt in range(2):
         ctx.check_cancel()
         try:
@@ -505,28 +506,92 @@ async def _build_report(
         ):
             if event.kind == "completed":
                 completed = event
+        # 截断、过滤或工具调用不是完整报告，不能将其正文当作成功发布。
+        if completed is None or (completed.finish_reason or "stop") != "stop" or completed.tool_calls:
+            issue = "report_summary_invalid"
+            continue
         report = (completed.text if completed else "") or ""
-        refs = _extract_report_refs(report)
-        if refs and all(r in valid_refs for r in refs):
-            return report, refs, attempt > 0
-        if not refs:
-            # 模型未给引用列表：按零引用处理，不再修复。
-            return report, [], False
-    return report, refs, True
+        summary, refs, issue = _validate_report_summary(report, valid_refs)
+        if issue is None:
+            return _render_report(stats, summary, refs), refs, attempt > 0, None
+    return "", [], True, issue
 
 
-_REF_LINE = __import__("re").compile(r"引用\s*[:：]\s*\[([^\]]*)\]")
+_REF_LINE = re.compile(r"引用\s*[:：]\s*\[([^\]]*)\]\s*")
+_CHINESE_NUMBER = r"[零〇一二两三四五六七八九十百千万亿兆壹贰叁肆伍陆柒捌玖拾佰仟萬億]+"
+_CATEGORY_WORD = r"(?:风险|问题|故障|事件|消息|事故|建议|隐患|异常)"
+_CATEGORY_ABSENCE = r"(?:没有发生|没有出现|未出现|未发生|没有|未见|不存在|未发现|无)"
+_QUANTITY = re.compile(
+    rf"(?:{_CHINESE_NUMBER}\s*(?:多|余|几)?\s*(?:条|个|则|人|次|起|项|例|件|宗|消息|事件|事故|成|倍|名|份|类|种|台|天|周|月|年|小时|分钟|秒|%|以上|以下|左右|余|分之))"
+    rf"|(?:第\s*{_CHINESE_NUMBER})|(?:百分|千分)(?:之)?\s*{_CHINESE_NUMBER}"
+    r"|[一二三四五六七八九壹贰叁肆伍陆柒捌玖][十百千万亿兆拾佰仟萬億][零〇一二两三四五六七八九十百千万亿兆壹贰叁肆伍陆柒捌玖拾佰仟萬億]*"
+    rf"|(?:为|是|有|达|约)\s*{_CHINESE_NUMBER}(?=[\s，。；：,.!！？]|$)"
+    rf"|(?:总数|总计|合计|共|数量|数目|共有|总共)\s*[:：]?\s*{_CHINESE_NUMBER}(?![\u4e00-\u9fff])"
+    rf"|(?<![\u4e00-\u9fff]){_CHINESE_NUMBER}(?=[\s，。；：,.!！？]|$)"
+    r"|(?:比[^。；，\n]{0,20}(?:多|少|高|低))"
+    # 类别前后出现的绝对否定可能与程序统计直接冲突，宁可触发修复也不冒充已验证。
+    rf"|(?:{_CATEGORY_ABSENCE}(?:任何|明显)?{_CATEGORY_WORD})"
+    rf"|(?:{_CATEGORY_WORD}(?:类|消息|事件)?(?:并|尚)?{_CATEGORY_ABSENCE})"
+    r"|(?:多数|少数|半数|一半|大半|最多|最少|较多|较少|偏多|偏少|更多|更少|更高|更低|多于|少于|高于|低于|远超|超过|超出|领先|落后|不及|多过|少过|占比|比例|比率|占据|占主导|大多数|大部分|绝大部分|排名|首位|所有|全部|每条|每个|无一例外)"
+    r"|\b(?:exceed(?:s|ed|ing)?|outnumber(?:s|ed|ing)?|surpass(?:es|ed|ing)?|higher|lower|greater|fewer)\b"
+    r"|\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|trillion|dozen|percent|majority|minority|most|more|less|several|few)\b",
+    re.IGNORECASE,
+)
+_SUMMARY_HEADING = re.compile(r"^\s*#{1,6}\s*(?:总结|分类统计|汇报要点)\s*$")
+_ORDINARY_NUMERAL_WORDS = ("进一步", "下一步", "一旦", "一律", "一致", "统一", "一起", "一直", "一线", "零件")
 
 
 def _extract_report_refs(report: str) -> list[str]:
-    m = _REF_LINE.search(report)
+    m = _REF_LINE.fullmatch(report.strip().splitlines()[-1]) if report.strip() else None
     if not m:
         return []
     return [t.strip() for t in m.group(1).split(",") if t.strip()]
 
 
 def _REF_FEEDBACK(valid_refs: list[str]) -> str:
-    return f"\n引用列表只能包含这些 message_ref：{json.dumps(valid_refs, ensure_ascii=False)}；请修正后重发。"
+    return (f"\n引用列表只能包含这些 message_ref：{json.dumps(valid_refs, ensure_ascii=False)}；"
+            "请删除正文中所有数字、数量、比例、排序及数量比较，只保留定性摘要后重发。")
+
+
+def _validate_report_summary(report: str, valid_refs: list[str]) -> tuple[str, list[str], str | None]:
+    """校验完整模型正文；末尾引用仅作标识符，不能参与数值判断。"""
+    lines = report.strip().splitlines()
+    refs = _extract_report_refs(report)
+    if lines and _REF_LINE.fullmatch(lines[-1]):
+        lines = lines[:-1]
+    summary = "\n".join(lines).strip()
+    normalized = unicodedata.normalize("NFKC", summary)
+    # 数字或引用标识只能留在已验证的末行，避免正文冒充可信引用。
+    if (any(ref not in valid_refs for ref in refs) or any(ch in normalized for ch in "[]【】《》")
+            or re.search(r"引用\s*:|(?:参见|依据|来源|引用|参考|出自)\s*[【《]", normalized)):
+        return "", [], "report_refs_invalid"
+    if any(re.match(r"^\s*#{1,6}\s*", line) and not _SUMMARY_HEADING.fullmatch(line) for line in lines):
+        return "", [], "report_summary_invalid"
+    if "<" in normalized or ">" in normalized:
+        return "", [], "report_summary_invalid"
+    if not any(char.isalpha() for line in lines if not _SUMMARY_HEADING.fullmatch(line) for char in line):
+        return "", [], "report_summary_invalid"
+    # 先在原文检查数量语境，再去除有限的普通词；避免白名单组合掩盖数词。
+    if _QUANTITY.search(normalized):
+        return "", [], "report_summary_invalid"
+    numeral_text = normalized
+    for word in _ORDINARY_NUMERAL_WORDS:
+        numeral_text = numeral_text.replace(word, "")
+    if any(char.isnumeric() or char == "两" for char in numeral_text):
+        return "", [], "report_summary_invalid"
+    return summary, refs, None
+
+
+def _render_report(stats: dict[str, Any], summary: str, refs: list[str]) -> str:
+    # 分类总数、计数及比例直接渲染自程序统计，不复用模型产出的统计段。
+    lines = ["## 分类统计", f"可信分类：{stats['total_messages']} 条"]
+    for category in stats["categories"]:
+        lines.append(f"- {category['name']}：{category['count']} 条（{category['ratio']}%）")
+    lines.append("## 汇报要点")
+    lines.extend(line for line in summary.splitlines() if not _SUMMARY_HEADING.fullmatch(line))
+    if refs:
+        lines.append(f"引用: [{', '.join(refs)}]")
+    return "\n".join(lines)
 
 
 def _program_partial_report(
@@ -536,12 +601,13 @@ def _program_partial_report(
     """程序 partial 报告：只用已校验分类与统计，说明未完成原因；不保留/补造引用。"""
     lines = ["## 总结", f"窗口 {control.start} ~ {control.end_exclusive} 的群消息分析报告（程序生成）。"]
     lines.append("## 分类统计")
+    lines.append(f"可信分类：{stats['total_messages']} 条")
     for category in stats["categories"]:
         lines.append(f"- {category['name']}：{category['count']} 条（{category['ratio']}%）")
     lines.append("## 汇报要点")
     if failed_refs or unprocessed:
         lines.append(f"- 覆盖说明：{len(failed_refs)} 条分类失败、{len(unprocessed)} 条未处理（超长）。")
-    lines.append("- 报告由程序依据已校验统计生成：模型报告引用未通过校验。")
+    lines.append("- 报告由程序依据已校验统计生成：模型报告摘要或引用未通过校验。")
     return "\n".join(lines)
 
 

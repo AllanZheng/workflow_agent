@@ -137,7 +137,7 @@ def test_cfg06_group_actual_classification_report_and_context(monkeypatch):
         [_text_chunk('{"assignments":[{"message_ref":"m1","category":"风险类"},'
                      '{"message_ref":"m2","category":"风险类"},'
                      '{"message_ref":"m3","category":"建议类"}]}'), _final_chunk()],
-        [_text_chunk('## 总结\n告警\n## 分类统计\n风险2条，建议1条\n## 汇报要点\n需处理\n引用: [m1]'),
+        [_text_chunk('## 总结\n告警\n## 汇报要点\n需处理\n引用: [m1]'),
          _final_chunk()]])
     requests = capture_requests(transport)
     response = TestClient(build_platform_service()).post('/execution-v1/respond', json=envelope)
