@@ -1,11 +1,18 @@
+# execution-v1 平台服务（V3 原生内核，无 checkpoint/PG 依赖）。
 FROM python:3.12-slim
 
 WORKDIR /app
-ENV FLOWAGENT_CHECKPOINT=postgres
-COPY pyproject.toml README.md ./
+COPY pyproject.toml requirements.txt MANIFEST.in README.md LICENSE ./
 COPY flowagent ./flowagent
-COPY run_execution.py ./run_execution.py
-RUN pip install --no-cache-dir ".[api,postgres]"
+COPY services ./services
+COPY run_execution.py ./
+RUN pip install --no-cache-dir \
+    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    ".[api]"
 
+ENV PYTHONIOENCODING=utf-8 \
+    FRAMEWORK_AUTH_ENABLED=0 \
+    WORKFLOW_HOST=0.0.0.0 \
+    WORKFLOW_PORT=8080
 EXPOSE 8080
 CMD ["python", "run_execution.py"]

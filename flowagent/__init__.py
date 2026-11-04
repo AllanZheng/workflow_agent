@@ -1,26 +1,19 @@
-"""flowagent：配置驱动的 LangGraph 工作流智能体引擎。"""
+"""flowagent：业务工作流智能体（V3 原生内核）。
 
-from .config import WorkflowSpec, load_spec, load_spec_file
-from .engine import WorkflowEngine, build_graph
-from .errors import ConfigError, FlowAgentError, OutputParseError, TemplateError, ToolError
-from .llm import MockLLM, create_llm
-from .state import WFState
+包入口保持轻量：不载入 API/SDK/任何旧执行模块（技术方案 §5.1）。
+"""
 
-__version__ = "0.10.0"  # 版本单一来源：pyproject 动态读取此值（评审 4.8）
+__version__ = "0.11.0"  # 版本单一来源：pyproject 动态读取此值
+
+from .errors import (  # noqa: E402 - 仅异常类型
+    ConfigError,
+    FlowAgentError,
+    OutputParseError,
+    TemplateError,
+    ToolError,
+)
 
 __all__ = [
-    "WorkflowSpec",
-    "load_spec",
-    "load_spec_file",
-    "WorkflowEngine",
-    "build_graph",
-    "MockLLM",
-    "create_llm",
-    "WFState",
-    "ConfigError",
-    "FlowAgentError",
-    "OutputParseError",
-    "TemplateError",
-    "ToolError",
+    "ConfigError", "FlowAgentError", "OutputParseError", "TemplateError", "ToolError",
     "__version__",
 ]
